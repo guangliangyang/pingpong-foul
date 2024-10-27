@@ -1,0 +1,9 @@
+/model/train/
+
+# Ignore all files in .idea directory
+.idea/
+
+*.cache
+
+*.mp4
+*.mov

@@ -1,0 +1,29 @@
+Foul detection 
+
+Ball  
+
+Above the level of playing surface  
+
+Behind  the end line  
+
+Racket contact the ball only on its downward trajectory  
+
+back throw angle less than 30 degree 
+
+Open palm 
+
+Cannot be hidden by any part of body 
+
+Three point 
+
+drop point 
+
+Highest point (16 cm) 
+
+Hitting point 
+
+2d to 3d 
+
+Action segmentation 
+
+3 camera detect different rule  
