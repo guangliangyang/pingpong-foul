@@ -110,9 +110,9 @@ class TableTennisGame:
 
         # Initialize foul counts
         self.foul_counts = {
-            'Tossed from Above Table Surface': 0,
-            'Behind the End Line': 0,
-            'Backward Angle Less Than 30 Degrees': 0,
+            'Tossed from Below Table Surface': 0,
+            'In Front of the End Line': 0,
+            'Backward Angle More Than 30 Degrees': 0,
             'Tossed Upward Less Than 16 cm': 0
         }
 
@@ -300,28 +300,28 @@ class TableTennisGame:
                 # Ball just appeared
                 if current_ball_y > self.table_surface_y:
                     # Ball is below table surface
-                    self.foul_counts['Tossed from Above Table Surface'] += 1
-                    logger.info(f"Foul detected: Tossed from Above Table Surface in {source_key}")
+                    self.foul_counts['Tossed from Below Table Surface'] += 1
+                    logger.info(f"Foul detected: Tossed from Below Table Surface in {source_key}")
 
-        # Rule 2: Behind the End Line
+        # Rule 2: In Front of the End Line
         if player_positions and self.end_line_x is not None:
             # Check if player is beyond the end line
             player_x = max(x2 for (x1, y1, x2, y2) in player_positions)
             if player_x > self.end_line_x:
                 # Player is over the end line
-                self.foul_counts['Behind the End Line'] += 1
-                logger.info(f"Foul detected: Behind the End Line in {source_key}")
+                self.foul_counts['In Front of the End Line'] += 1
+                logger.info(f"Foul detected: In Front of the End Line in {source_key}")
 
-        # Rule 3: Backward Angle Less Than 30 Degrees
+        # Rule 3: Backward Angle More Than 30 Degrees
         if len(self.previous_racket_positions[source_key]) >= 2 and racket_positions:
             prev_x1, prev_y1, prev_x2, prev_y2 = self.previous_racket_positions[source_key][-1]
             curr_x1, curr_y1, curr_x2, curr_y2 = racket_positions[0]
             dx = curr_x1 - prev_x1
             dy = curr_y1 - prev_y1
             angle = np.degrees(np.arctan2(dy, dx))
-            if abs(angle) < 30:
-                self.foul_counts['Backward Angle Less Than 30 Degrees'] += 1
-                logger.info(f"Foul detected: Backward Angle Less Than 30 Degrees in {source_key}")
+            if abs(angle) > 30:
+                self.foul_counts['Backward Angle Less More 30 Degrees'] += 1
+                logger.info(f"Foul detected: Backward Angle More Than 30 Degrees in {source_key}")
 
         # Rule 4: Tossed Upward Less Than 16 cm
         if len(self.previous_ball_positions[source_key]) >= 1 and ball_positions and self.pixel_to_cm_ratio is not None:
@@ -731,7 +731,7 @@ class TableTennisApp:
         return mapping.get(source_key)
 
     def main_loop(self):
-        clock = pygame.time.Clock()
+        #clock = pygame.time.Clock()
 
         while True:
             for event in pygame.event.get():
@@ -754,9 +754,11 @@ class TableTennisApp:
                 self.console_last_update_time = current_time
 
             pygame.display.update()
-            clock.tick(30)  # Limit the loop to 30 FPS
+            #clock.tick(30)  # Limit the loop to 30 FPS
 
 if __name__ == "__main__":
     game = TableTennisGame()
     app = TableTennisApp(game)
     app.main_loop()
+
+
