@@ -58,8 +58,8 @@ def process_directory(input_dir, output_dir, frame_interval=15):
 
 
 # 设置输入目录和输出目录
-input_directory = os.path.join('..', 'mp4')
-output_directory = os.path.join('..', 'pic-extracted')
+input_directory = "C:/workspace/datasets/video_need_extract"
+output_directory = "C:/workspace/datasets/video_extracted"
 
 # 提取视频中的图像帧，每隔15帧提取一次
 process_directory(input_directory, output_directory, frame_interval=15)
