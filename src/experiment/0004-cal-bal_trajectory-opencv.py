@@ -17,7 +17,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Set parameters
 confidence_threshold = 0.1
-model_path = "C:/workspace/projects/pingpong-foul/model/best-new-transfer-yolov8m-freeze.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
 video_path = "C:\\workspace\\datasets\\foul-video\\c1.mp4"
 
 # Load YOLO model
@@ -169,7 +169,7 @@ def extract_trajectory(video_path):
 
         for result in results:
             for detection in result.boxes:
-                if detection.conf > confidence_threshold and int(detection.cls) == 3:
+                if detection.conf > confidence_threshold and int(detection.cls) == 80:
                     x_center = x + (detection.xyxy[0][0] + detection.xyxy[0][2]) / 2
                     y_center = y + (detection.xyxy[0][1] + detection.xyxy[0][3]) / 2
                     current_position = (x_center.item(), y_center.item())
