@@ -1,1 +1,5 @@
 https://github.com/labelmeai/labelme?tab=readme-ov-file
+
+1.open pingpong project
+2. run label img
+3. remember to set label format to yolo

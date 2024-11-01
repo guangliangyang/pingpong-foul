@@ -1,9 +1,8 @@
 import os
 import shutil
 
-# Set the source directory where your images and text files are stored
-source_directory = '/path/to/your/source_directory'
-source_directory = 'C:\\workspace\\datasets\\class-15'
+# Set the source directory where your images and text files are storedv
+source_directory = 'C:\\workspace\\datasets\\video_extracted'
 
 # Set the destination directories for images and labels
 image_dest = "C:\\workspace\\datasets\\coco-pp\\images\\train"

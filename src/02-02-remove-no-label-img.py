@@ -1,8 +1,7 @@
 import os
 
 # Set the directory where your images and text files are stored
-directory = '/path/to/your/directory'
-directory = 'C:\\workspace\\datasets\\class-15'
+directory = 'C:\\workspace\\datasets\\video_extracted'
 
 # List all files in the directory
 files = os.listdir(directory)
