@@ -41,12 +41,10 @@ while cap.isOpened():
                 x, y, w, h = box
                 track = track_history[track_id]
                 track.append((float(x), float(y)))  # x, y center point
-                if len(track) > 300:  # retain 30 tracks for 30 frames
-                    track.pop(0)
 
                 # Draw the tracking lines
                 points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
-                cv2.polylines(annotated_frame, [points], isClosed=False, color=(230, 230, 230), thickness=10)
+                cv2.polylines(annotated_frame, [points], isClosed=False, color=(230, 230, 230), thickness=2)
         else:
             # If no detections, just use the current frame as is
             annotated_frame = frame
