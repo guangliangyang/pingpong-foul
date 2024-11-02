@@ -8,12 +8,6 @@ import numpy as np
 import time
 import logging
 import mediapipe as mp
-from ultralytics import YOLO
-
-# Load the YOLO model
-
-model_file_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer02.pt"
-model = YOLO(model_file_path)
 
 SYS_TITLE = "Table Tennis Foul Detection System"
 GOLDEN_RATIO = 1.618
@@ -96,18 +90,16 @@ class TableTennisGame:
         self.video_length = 0
         self.current_frame = 0
         self.caps = {}  # Dictionary to hold multiple video captures
-        # Define your video sources here
         self.video_paths = {
             'camera1': 'C:\\workspace\\datasets\\foul-video\\c1.mp4',
             'camera2': 'C:\\workspace\\datasets\\foul-video\\c2.mp4',
             'camera3': 'C:\\workspace\\datasets\\foul-video\\c3.mp4',
-            # 'camera4': 'C:\\workspace\\datasets\\foul-video\\c4.mp4',  # Removed camera4
         }
         self.reset_variables()
         self.CV_CUDA_ENABLED = cv2.cuda.getCudaEnabledDeviceCount() > 0
         self.image_width = None
         self.image_height = None
-        self.fps = None  # Initialize self.fps
+        self.fps = None
 
         # Initialize foul counts
         self.foul_counts = {
@@ -122,9 +114,9 @@ class TableTennisGame:
         self.previous_racket_positions = {}
 
         # Define constants (adjust these values based on your setup)
-        self.table_surface_y = None  # Will be set after first frame
-        self.end_line_x = None       # Will be set after first frame
-        self.pixel_to_cm_ratio = None  # Will be set based on known object size
+        self.table_surface_y = None
+        self.end_line_x = None
+        self.pixel_to_cm_ratio = None
 
     def reset_variables(self):
         self.previous_time = None
@@ -177,7 +169,6 @@ class TableTennisGame:
         self.caps.clear()
 
     def process_video(self, frames):
-        # Process frames from all sources together
         output_images = {}
         canvases = {}
         skeleton_image = None  # To store the skeleton image from camera1
@@ -198,22 +189,10 @@ class TableTennisGame:
                 self.image_width = image.shape[1]
                 self.image_height = image.shape[0]
 
-            # YOLO inference
-            detected_objects = self.detect_objects(frame, model)
-            logger.debug(f"Detected objects for {source_key}: {detected_objects}")
-
-            timers['yolo_detection'] = time.time() - start_time
-            start_time = time.time()
-
-            # Initialize reference lines
-            if self.table_surface_y is None or self.end_line_x is None:
-                self.initialize_reference_lines(detected_objects)
-
-            # Analyze fouls
-            self.analyze_fouls(detected_objects, source_key)
+            # Initialize reference lines if needed
 
             # Draw bounding boxes and grid on a separate canvas
-            canvas = self.draw_bounding_boxes_and_grid(image, detected_objects)
+            canvas = self.draw_bounding_boxes_and_grid(image)
 
             timers['draw_bounding_boxes_and_grid'] = time.time() - start_time
 
@@ -233,7 +212,6 @@ class TableTennisGame:
         return output_images, canvases, skeleton_image
 
     def process_skeleton(self, frame):
-        # Convert the BGR image to RGB before processing.
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = pose.process(image_rgb)
 
@@ -252,152 +230,13 @@ class TableTennisGame:
 
         return skeleton_image
 
-    def initialize_reference_lines(self, detected_objects):
-        # Find the table in the detected objects
-        for (x1, y1, x2, y2, _, class_id) in detected_objects:
-            if class_id == 2:  # Assuming class_id 2 is 'Table'
-                # Set table_surface_y as the top y-coordinate of the table
-                self.table_surface_y = y1
-                # Set end_line_x as the left x-coordinate of the table
-                self.end_line_x = x1
-                # Optionally set pixel_to_cm_ratio based on table dimensions
-                table_height_pixels = y2 - y1
-                known_table_height_cm = 76  # Standard table height in cm
-                self.pixel_to_cm_ratio = known_table_height_cm / table_height_pixels
-                logger.info(f"Initialized reference lines: table_surface_y={self.table_surface_y}, end_line_x={self.end_line_x}, pixel_to_cm_ratio={self.pixel_to_cm_ratio}")
-                break
-
-    def analyze_fouls(self, detected_objects, source_key):
+    def analyze_fouls(self, source_key):
         # Simplified foul detection logic
-        # Class IDs (assuming):
-        # 0: Ball
-        # 1: Racket
-        # 2: Table
-        # 3: Player
+        pass
 
-        ball_positions = []
-        racket_positions = []
-        player_positions = []
-
-        for (x1, y1, x2, y2, confidence, class_id) in detected_objects:
-            if class_id == 0:
-                ball_positions.append((x1, y1, x2, y2))
-            elif class_id == 1:
-                racket_positions.append((x1, y1, x2, y2))
-            elif class_id == 3:
-                player_positions.append((x1, y1, x2, y2))
-
-        # Initialize previous positions if not present
-        if source_key not in self.previous_ball_positions:
-            self.previous_ball_positions[source_key] = []
-        if source_key not in self.previous_racket_positions:
-            self.previous_racket_positions[source_key] = []
-
-        # Rule 1: Tossed from Above Table Surface
-        if ball_positions and self.table_surface_y is not None:
-            # Check if the ball is below the table surface when first detected
-            current_ball_y = min(y1 for (x1, y1, x2, y2) in ball_positions)
-            if len(self.previous_ball_positions[source_key]) == 0:
-                # Ball just appeared
-                if current_ball_y > self.table_surface_y:
-                    # Ball is below table surface
-                    self.foul_counts['Tossed from Below Table Surface'] += 1
-                    logger.info(f"Foul detected: Tossed from Below Table Surface in {source_key}")
-
-        # Rule 2: In Front of the End Line
-        if player_positions and self.end_line_x is not None:
-            # Check if player is beyond the end line
-            player_x = max(x2 for (x1, y1, x2, y2) in player_positions)
-            if player_x > self.end_line_x:
-                # Player is over the end line
-                self.foul_counts['In Front of the End Line'] += 1
-                logger.info(f"Foul detected: In Front of the End Line in {source_key}")
-
-        # Rule 3: Backward Angle More Than 30 Degrees
-        if len(self.previous_racket_positions[source_key]) >= 2 and racket_positions:
-            prev_x1, prev_y1, prev_x2, prev_y2 = self.previous_racket_positions[source_key][-1]
-            curr_x1, curr_y1, curr_x2, curr_y2 = racket_positions[0]
-            dx = curr_x1 - prev_x1
-            dy = curr_y1 - prev_y1
-            angle = np.degrees(np.arctan2(dy, dx))
-            if abs(angle) > 30:
-                self.foul_counts['Backward Angle Less More 30 Degrees'] += 1
-                logger.info(f"Foul detected: Backward Angle More Than 30 Degrees in {source_key}")
-
-        # Rule 4: Tossed Upward Less Than 16 cm
-        if len(self.previous_ball_positions[source_key]) >= 1 and ball_positions and self.pixel_to_cm_ratio is not None:
-            prev_ball_y = self.previous_ball_positions[source_key][0][1]
-            current_ball_y = ball_positions[0][1]
-            vertical_displacement_pixels = prev_ball_y - current_ball_y
-            vertical_displacement_cm = vertical_displacement_pixels * self.pixel_to_cm_ratio
-            if vertical_displacement_cm < 16:
-                self.foul_counts['Tossed Upward Less Than 16 cm'] += 1
-                logger.info(f"Foul detected: Tossed Upward Less Than 16 cm in {source_key}")
-
-        # Update previous positions
-        if ball_positions:
-            self.previous_ball_positions[source_key].append(ball_positions[0])
-            if len(self.previous_ball_positions[source_key]) > 10:
-                self.previous_ball_positions[source_key].pop(0)
-        if racket_positions:
-            self.previous_racket_positions[source_key].append(racket_positions[0])
-            if len(self.previous_racket_positions[source_key]) > 10:
-                self.previous_racket_positions[source_key].pop(0)
-
-    def draw_bounding_boxes_and_grid(self, frame, detected_objects):
-        # Create a blank canvas the same size as frame
+    def draw_bounding_boxes_and_grid(self, frame):
         canvas = np.zeros_like(frame)
-
-        # Annotate detected objects
-        for (x1, y1, x2, y2, _, class_id) in detected_objects:
-            color = (0, 255, 0)
-            label = ''
-            if class_id == 80:
-                label = 'Ball'
-                color = (0, 0, 255)
-            elif class_id == 1:
-                label = 'Racket'
-                color = (255, 0, 0)
-            elif class_id == 2:
-                label = 'Table'
-                color = (0, 255, 0)
-            elif class_id == 3:
-                label = 'Player'
-                color = (255, 255, 0)
-
-            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(canvas, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
         return canvas
-
-    def detect_objects(self, frame, model, nms_threshold=0.4):
-        results = model(frame)
-        detected_objects = []
-
-        boxes = []
-        confidences = []
-        class_ids = []
-
-        for result in results:
-            for box in result.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                score = float(box.conf[0])  # Ensure the score is a float
-                cls = int(box.cls[0])
-                boxes.append([x1, y1, x2 - x1, y2 - y1])  # Convert to (x, y, width, height) format
-                confidences.append(score)
-                class_ids.append(cls)
-
-        # Apply NMS
-        indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.05, nms_threshold=nms_threshold)
-
-        if len(indices) > 0:
-            if isinstance(indices[0], list):
-                indices = [i[0] for i in indices]
-            for i in indices:
-                x, y, w, h = boxes[i]
-                detected_objects.append((x, y, x + w, y + h, confidences[i], class_ids[i]))
-
-        return detected_objects
 
     def analyze_video(self, queue):
         self.video_playing = True
@@ -422,7 +261,6 @@ class TableTennisGame:
             queue.put((output_images, canvases, skeleton_image))
 
             self.frame_count += 1
-            # Synchronize frame rate
             time.sleep(self.delay / 1000.0)
 
         self.stop_video_analysis()
@@ -481,7 +319,6 @@ class TableTennisApp:
         self.video_thread.start()
 
     def update_statistics_table(self):
-        # Implement the method to display foul counts in Region 7
         region = self.layout['region7']
         stats_surface = pygame.Surface((region['width'], region['height']))
         stats_surface.fill((255, 255, 255))
@@ -503,10 +340,9 @@ class TableTennisApp:
         self.screen.blit(stats_surface, (region['x'], region['y']))
 
     def update_console(self):
-        # Update the console in Region 6 with real-time logs
         region = self.layout['region6']
         console_surface = pygame.Surface((region['width'], region['height']))
-        console_surface.fill((0, 0, 0))  # Black background
+        console_surface.fill((0, 0, 0))
 
         font = pygame.font.SysFont('Consolas', 16)
         log_lines = log_handler.get_logs()
@@ -515,14 +351,13 @@ class TableTennisApp:
 
         y_offset = 5
         for line in log_lines_to_display:
-            text_surface = font.render(line, True, (0, 255, 0))  # Green text
+            text_surface = font.render(line, True, (0, 255, 0))
             console_surface.blit(text_surface, (5, y_offset))
             y_offset += font.get_height() + 2
 
         self.screen.blit(console_surface, (region['x'], region['y']))
 
     def update_region6(self):
-        # Now handled by update_console
         pass
 
     def stop_video_analysis_thread(self):
@@ -559,9 +394,8 @@ class TableTennisApp:
     def update_video_panel(self, images, canvases, skeleton_image):
         for source_key in images.keys():
             try:
-                frame = images[source_key]  # frame is a numpy array in BGR format
+                frame = images[source_key]
 
-                # Convert from BGR to RGB for Pygame
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 if self.overlay_enabled:
@@ -587,7 +421,6 @@ class TableTennisApp:
 
                 video_surface.fill((0, 0, 0))
 
-                # Transpose the image to match Pygame's format
                 overlay_resized = np.transpose(overlay_resized, (1, 0, 2))
 
                 overlay_surface = pygame.surfarray.make_surface(overlay_resized)
@@ -600,7 +433,6 @@ class TableTennisApp:
             except Exception as e:
                 logger.error(f"Error updating video panel for {source_key}: {e}")
 
-        # Display the skeleton image in video_region_4
         if skeleton_image is not None:
             try:
                 skeleton_image_rgb = cv2.cvtColor(skeleton_image, cv2.COLOR_BGR2RGB)
@@ -620,7 +452,6 @@ class TableTennisApp:
 
                 video_surface.fill((0, 0, 0))
 
-                # Transpose the image to match Pygame's format
                 skeleton_resized = np.transpose(skeleton_resized, (1, 0, 2))
 
                 skeleton_surface = pygame.surfarray.make_surface(skeleton_resized)
@@ -636,23 +467,18 @@ class TableTennisApp:
         pygame.display.update()
 
     def update_skeleton_surface(self, skeleton_canvas):
-        # No longer needed, handled in update_video_panel
         pass
 
     def update_data_panel(self, *args):
-        # Implement as needed
         pass
 
     def update_data(self):
-        # Implement as needed
         pass
 
     def setup_ui(self):
-        # Existing setup code
         self.title_surface = pygame.Surface((self.layout['title_region']['width'], self.layout['title_region']['height']))
         self.title_surface.fill((255, 255, 255))
 
-        # Create video surfaces for each video feed
         self.video_surfaces = {}
         for i in range(1, 5):
             region_key = f'video_region_{i}'
@@ -661,11 +487,9 @@ class TableTennisApp:
             video_surface.fill((0, 0, 0))
             self.video_surfaces[region_key] = video_surface
 
-        # Add borders for each region
         border_color = (0, 0, 255)
-        border_width = 4  # Define the width of the border
+        border_width = 4
 
-        # Draw borders around each region
         pygame.draw.rect(self.screen, border_color, pygame.Rect(self.layout['title_region']['x'],
                                                                 self.layout['title_region']['y'],
                                                                 self.layout['title_region']['width'],
@@ -678,18 +502,15 @@ class TableTennisApp:
                                                                     region['width'],
                                                                     region['height']), border_width)
 
-        # Initialize Region 6 and Region 7 surfaces with white background
         self.region6_surface = pygame.Surface((self.layout['region6']['width'], self.layout['region6']['height']))
-        self.region6_surface.fill((0, 0, 0))  # Black background for console
+        self.region6_surface.fill((0, 0, 0))
 
         self.region7_surface = pygame.Surface((self.layout['region7']['width'], self.layout['region7']['height']))
         self.region7_surface.fill((255, 255, 255))
 
-        # Blit the surfaces onto the screen
         self.screen.blit(self.region6_surface, (self.layout['region6']['x'], self.layout['region6']['y']))
         self.screen.blit(self.region7_surface, (self.layout['region7']['x'], self.layout['region7']['y']))
 
-        # Draw borders around Region 6 and Region 7
         pygame.draw.rect(self.screen, border_color, pygame.Rect(self.layout['region6']['x'],
                                                                 self.layout['region6']['y'],
                                                                 self.layout['region6']['width'],
@@ -703,7 +524,6 @@ class TableTennisApp:
         self.update_mode_label_and_reset_var()
 
     def update_speed_stats(self, speeds):
-        # Implement as needed
         pass
 
     def mps_to_kph(self, speed_mps):
@@ -720,20 +540,16 @@ class TableTennisApp:
                 sys.exit()
             elif event.key == pygame.K_F3:
                 self.overlay_enabled = not self.overlay_enabled
-            # Add other key events as needed
 
     def get_region_key_from_source(self, source_key):
         mapping = {
             'camera1': 'video_region_1',
             'camera2': 'video_region_2',
             'camera3': 'video_region_3',
-            # 'camera4': 'video_region_4',  # Removed camera4
         }
         return mapping.get(source_key)
 
     def main_loop(self):
-        #clock = pygame.time.Clock()
-
         while True:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -746,20 +562,15 @@ class TableTennisApp:
                 images, canvases, skeleton_image = self.queue.get()
                 self.update_video_panel(images, canvases, skeleton_image)
                 self.update_statistics_table()
-                # Update other regions or data as needed
 
-            # Update console at defined interval
             current_time = time.time()
             if self.console_last_update_time is None or (current_time - self.console_last_update_time) >= self.console_update_interval:
                 self.update_console()
                 self.console_last_update_time = current_time
 
             pygame.display.update()
-            #clock.tick(30)  # Limit the loop to 30 FPS
 
 if __name__ == "__main__":
     game = TableTennisGame()
     app = TableTennisApp(game)
     app.main_loop()
-
-
