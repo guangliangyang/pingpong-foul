@@ -1,5 +1,6 @@
 import cv2
 import torch
+import numpy as np
 from ultralytics import YOLO
 import math
 
@@ -32,7 +33,7 @@ def find_key_points(trajectory, x_acceleration_threshold=5.0):
         prev_x, prev_y = trajectory[i - 1]
         curr_x, curr_y = trajectory[i]
         speed = math.sqrt((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2)
-        if speed > 1.0:  # 假设1.0是一个小的速度阈值
+        if speed > 2.0:  # 假设1.0是一个小的速度阈值
             throw_point = trajectory[i - 1]
             break
 
@@ -118,14 +119,27 @@ def process_video(video_path):
             # 绘制轨迹
             for i in range(1, len(trajectory)):
                 cv2.line(annotated_frame, trajectory[i - 1], trajectory[i], (255, 0, 0), 2)
+                cv2.circle(annotated_frame, trajectory[i], 3, (0, 255, 255), -1)
 
-            # 如果轨迹点数量大于10，显示关键点
+                # 如果轨迹点数量大于10，显示关键点
             if len(trajectory) > 10:
                 throw_point, highest_point, hit_point = find_key_points(trajectory)
                 if throw_point:
-                    cv2.circle(annotated_frame, throw_point, 5, (0, 255, 255), -1)  # 黄色圆圈表示抛球点
+                    # Draw a square for the throw point
+                    cv2.rectangle(annotated_frame,
+                                  (throw_point[0] - 5, throw_point[1] - 5),
+                                  (throw_point[0] + 5, throw_point[1] + 5),
+                                  (0, 255, 255), -1)  # Yellow square
+
                 if highest_point:
-                    cv2.circle(annotated_frame, highest_point, 5, (0, 0, 255), -1)  # 红色圆圈表示最高点
+                    # Draw a triangle for the highest point
+                    triangle_points = np.array([
+                        [highest_point[0], highest_point[1] - 6],  # Top vertex
+                        [highest_point[0] - 5, highest_point[1] + 5],  # Bottom left vertex
+                        [highest_point[0] + 5, highest_point[1] + 5]  # Bottom right vertex
+                    ], np.int32).reshape((-1, 1, 2))
+                    cv2.fillPoly(annotated_frame, [triangle_points], color=(0, 0, 255))  # Red triangle
+
                 if hit_point:
                     cv2.circle(annotated_frame, hit_point, 5, (0, 255, 0), -1)  # 绿色圆圈表示击打点
 
