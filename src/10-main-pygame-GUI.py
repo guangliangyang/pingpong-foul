@@ -11,7 +11,8 @@ import mediapipe as mp
 from ultralytics import YOLO
 
 # Load the YOLO model
-model_file_path = os.path.join('..', 'model', 'best.pt')
+
+model_file_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer02.pt"
 model = YOLO(model_file_path)
 
 SYS_TITLE = "Table Tennis Foul Detection System"
@@ -351,7 +352,7 @@ class TableTennisGame:
         for (x1, y1, x2, y2, _, class_id) in detected_objects:
             color = (0, 255, 0)
             label = ''
-            if class_id == 0:
+            if class_id == 80:
                 label = 'Ball'
                 color = (0, 0, 255)
             elif class_id == 1:

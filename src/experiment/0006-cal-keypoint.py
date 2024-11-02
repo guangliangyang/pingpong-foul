@@ -4,14 +4,14 @@ from ultralytics import YOLO
 import math
 
 # 模型和视频路径
-model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer02.pt"
 video_paths = [
-    "C:\\workspace\\datasets\\foul-video\\c1.mp4",
-    "C:\\workspace\\datasets\\foul-video\\coach01.mp4",
-    "C:\\workspace\\datasets\\foul-video\\game01.mp4",
-    "C:\\workspace\\datasets\\foul-video\\01.mov",
-    "C:\\workspace\\datasets\\foul-video\\01-5.mp4",
-    "C:\\workspace\\datasets\\foul-video\\test-pp.mp4"
+    #"C:\\workspace\\datasets\\foul-video\\c1.mp4",
+    #"C:\\workspace\\datasets\\foul-video\\01-5.mp4",
+     "C:\\workspace\\datasets\\foul-video\\coach01.mp4",
+    # "C:\\workspace\\datasets\\foul-video\\game01.mp4",
+    # "C:\\workspace\\datasets\\foul-video\\01.mov",
+     #"C:\\workspace\\datasets\\foul-video\\test-pp.mp4"
 ]
 
 # 加载YOLO11模型
@@ -131,7 +131,7 @@ def process_video(video_path):
     cap.release()
     cv2.destroyAllWindows()
 
-# 循环遍历视频路径列表并处理每个视频
-for video_path in video_paths:
-    print(f"Processing video: {video_path}")
-    process_video(video_path)
+while True:
+    for video_path in video_paths:
+        print(f"Processing video: {video_path}")
+        process_video(video_path)
