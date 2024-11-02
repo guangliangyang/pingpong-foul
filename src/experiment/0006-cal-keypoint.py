@@ -7,7 +7,7 @@ import math
 # 模型和视频路径
 model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer02.pt"
 video_paths = [
-    "C:\\workspace\\datasets\\foul-video\\c1.mp4",
+    "C:\\workspace\\datasets\\foul-video\\c2.mp4",
     # "C:\\workspace\\datasets\\foul-video\\01-5.mp4",
     # "C:\\workspace\\datasets\\foul-video\\coach01.mp4",
     # "C:\\workspace\\datasets\\foul-video\\game01.mp4",
@@ -33,7 +33,7 @@ def find_key_points(trajectory, x_acceleration_threshold=5.0):
         prev_x, prev_y = trajectory[i - 1]
         curr_x, curr_y = trajectory[i]
         speed = math.sqrt((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2)
-        if speed > 2.0:  # 假设1.0是一个小的速度阈值
+        if speed > 5.0:  # 假设5.0是一个小的速度阈值
             throw_point = trajectory[i - 1]
             break
 
@@ -116,32 +116,37 @@ def process_video(video_path):
                 trajectory.clear()
                 no_detection_frames = 0
 
-            # 绘制轨迹
-            for i in range(1, len(trajectory)):
-                cv2.line(annotated_frame, trajectory[i - 1], trajectory[i], (255, 0, 0), 2)
-                cv2.circle(annotated_frame, trajectory[i], 3, (0, 255, 255), -1)
-
-                # 如果轨迹点数量大于10，显示关键点
+            # 绘制轨迹，仅从抛球点开始
             if len(trajectory) > 10:
                 throw_point, highest_point, hit_point = find_key_points(trajectory)
+
+                # Check if throw_point exists, and find its index
                 if throw_point:
+                    throw_index = trajectory.index(throw_point)
+
+                    # Draw trajectory starting from the throw point
+                    for i in range(throw_index + 1, len(trajectory)):
+                        cv2.line(annotated_frame, trajectory[i - 1], trajectory[i], (255, 0, 0), 2)
+                        cv2.circle(annotated_frame, trajectory[i], 3, (0, 255, 255), -1)
+
+                    # Draw key points
                     # Draw a square for the throw point
                     cv2.rectangle(annotated_frame,
                                   (throw_point[0] - 5, throw_point[1] - 5),
                                   (throw_point[0] + 5, throw_point[1] + 5),
                                   (0, 255, 255), -1)  # Yellow square
 
-                if highest_point:
-                    # Draw a triangle for the highest point
-                    triangle_points = np.array([
-                        [highest_point[0], highest_point[1] - 6],  # Top vertex
-                        [highest_point[0] - 5, highest_point[1] + 5],  # Bottom left vertex
-                        [highest_point[0] + 5, highest_point[1] + 5]  # Bottom right vertex
-                    ], np.int32).reshape((-1, 1, 2))
-                    cv2.fillPoly(annotated_frame, [triangle_points], color=(0, 0, 255))  # Red triangle
+                    if highest_point:
+                        # Draw a triangle for the highest point
+                        triangle_points = np.array([
+                            [highest_point[0], highest_point[1] - 6],  # Top vertex
+                            [highest_point[0] - 5, highest_point[1] + 5],  # Bottom left vertex
+                            [highest_point[0] + 5, highest_point[1] + 5]  # Bottom right vertex
+                        ], np.int32).reshape((-1, 1, 2))
+                        cv2.fillPoly(annotated_frame, [triangle_points], color=(0, 0, 255))  # Red triangle
 
-                if hit_point:
-                    cv2.circle(annotated_frame, hit_point, 5, (0, 255, 0), -1)  # 绿色圆圈表示击打点
+                    if hit_point:
+                        cv2.circle(annotated_frame, hit_point, 5, (0, 255, 0), -1)  # Green circle for hit point
 
             cv2.imshow("YOLO11 Tracking with Key Points", annotated_frame)
 
