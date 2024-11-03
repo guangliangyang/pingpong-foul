@@ -9,7 +9,6 @@ from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 import logging
 import torch
-import math
 from ultralytics import YOLO
 
 # Set up logging
@@ -36,8 +35,10 @@ class TableTennisGame:
             "camera2": cv2.VideoCapture(self.video_paths['camera2'])
         }
 
-        # Store 3D ball trajectory
+        # Store 3D ball trajectory and separate 2D trajectories for each camera
         self.ball_trajectory_3d = []
+        self.trajectory_2d_camera1 = []
+        self.trajectory_2d_camera2 = []
 
         # Initialize plot figure for trajectory visualization
         self.fig = plt.figure(figsize=(4, 4))
@@ -70,16 +71,39 @@ class TableTennisGame:
         logging.debug(f"Calculated 3D coordinates: {points_3d.flatten()}")
         return points_3d.flatten()
 
-    def track_ball(self, frame, camera_key):
+    def project_3d_line_to_2d(self, frame, proj_matrix, rot_vec, trans_vec, intrinsics):
+        # Define the 3D line endpoints
+        start_3d = np.array([[0], [0], [0]], dtype=np.float32)
+        end_3d = np.array([[1.52], [0], [0]], dtype=np.float32)
+
+        # Project the 3D points to 2D
+        start_2d = cv2.projectPoints(start_3d, rot_vec, trans_vec, intrinsics, None)[0][0][0]
+        end_2d = cv2.projectPoints(end_3d, rot_vec, trans_vec, intrinsics, None)[0][0][0]
+
+        # Draw the line on the frame
+        cv2.line(frame, (int(start_2d[0]), int(start_2d[1])), (int(end_2d[0]), int(end_2d[1])), (0, 0, 255), 2)
+
+    def track_ball(self, frame, camera_key, trajectory_2d):
         results = self.model.track(frame, persist=True, tracker="bytetrack.yaml")
         if results[0].boxes:
             box = results[0].boxes[0]
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             logging.debug(f"{camera_key}: Detected ball at ({cx}, {cy})")
+            trajectory_2d.append((cx, cy))
+
+            # Limit 2D trajectory to the last 100 points
+            if len(trajectory_2d) > 100:
+                trajectory_2d.pop(0)
+
             return np.array([[cx], [cy]], dtype=np.float32)
         logging.debug(f"{camera_key}: No ball detected.")
         return None
+
+    def draw_trajectory(self, frame, trajectory_2d):
+        for i in range(1, len(trajectory_2d)):
+            cv2.line(frame, trajectory_2d[i - 1], trajectory_2d[i], (255, 0, 0), 2)
+            cv2.circle(frame, trajectory_2d[i], 3, (0, 255, 255), -1)
 
     def update_plot_surface(self):
         # Clear the plot and set up labels
@@ -89,7 +113,7 @@ class TableTennisGame:
         self.ax.set_zlabel("Z")
 
         # Set fixed axis limits to maintain a consistent cubic space
-        self.ax.set_xlim(-1, 1)
+        self.ax.set_xlim(1, -1)
         self.ax.set_ylim(-1, 1)
         self.ax.set_zlim(-1, 1)
 
@@ -127,6 +151,14 @@ class TableTennisGame:
             ret, frame = self.caps[camera].read()
         return frame
 
+    def reset_trajectories_if_needed(self, last_point, current_point):
+        # Check if last_point y > 0.02 and current_point y < 0, and reset trajectories if condition is met
+        if last_point[1] > 0.02 and current_point[1] < 0:
+            logging.info("Resetting trajectories due to y-coordinate threshold condition.")
+            self.ball_trajectory_3d.clear()
+            self.trajectory_2d_camera1.clear()
+            self.trajectory_2d_camera2.clear()
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((1200, 400))
@@ -137,19 +169,32 @@ def main():
         frame1 = game.read_frame("camera1")
         frame2 = game.read_frame("camera2")
 
-        # Detect ball position in each frame
-        ball_point1 = game.track_ball(frame1, "camera1")
-        ball_point2 = game.track_ball(frame2, "camera2")
+        # Detect ball position and update 2D trajectory for each camera
+        ball_point1 = game.track_ball(frame1, "camera1", game.trajectory_2d_camera1)
+        ball_point2 = game.track_ball(frame2, "camera2", game.trajectory_2d_camera2)
 
         # If both ball points are detected, calculate 3D coordinates
         if ball_point1 is not None and ball_point2 is not None:
             ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
             logging.info(f"3D Ball Coordinates: {ball_3d}")
+
+            # Check if we need to reset the trajectories
+            if game.ball_trajectory_3d:
+                game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
+
             game.ball_trajectory_3d.append(tuple(ball_3d))
 
-            # Limit trajectory to the last 100 points
+            # Limit 3D trajectory to the last 100 points
             if len(game.ball_trajectory_3d) > 100:
                 game.ball_trajectory_3d.pop(0)
+
+        # Draw 2D trajectories on each frame
+        game.draw_trajectory(frame1, game.trajectory_2d_camera1)
+        game.draw_trajectory(frame2, game.trajectory_2d_camera2)
+
+        # Project the fixed 3D line to both frames
+        game.project_3d_line_to_2d(frame1, game.proj_matrix1, game.camera1_rot_vec, game.camera1_trans_vec, game.camera1_intrinsics)
+        game.project_3d_line_to_2d(frame2, game.proj_matrix2, game.camera2_rot_vec, game.camera2_trans_vec, game.camera2_intrinsics)
 
         # Update and retrieve the 3D plot surface
         plot_surface = game.update_plot_surface()
@@ -165,7 +210,7 @@ def main():
         # Display frames and plot surface on the Pygame window
         screen.blit(frame1_surface, (0, 0))
         screen.blit(frame2_surface, (400, 0))
-        screen.blit(plot_surface, (800, 0))  # Display the plot to the right of frame 2
+        screen.blit(plot_surface, (800, 0))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
