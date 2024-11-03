@@ -5,9 +5,9 @@ from ultralytics import YOLO
 import math
 
 # 模型和视频路径
-model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer02.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
 video_paths = [
-    "C:\\workspace\\datasets\\foul-video\\c2.mp4",
+    "C:\\workspace\\datasets\\foul-video\\c1.mp4",
     # "C:\\workspace\\datasets\\foul-video\\01-5.mp4",
     # "C:\\workspace\\datasets\\foul-video\\coach01.mp4",
     # "C:\\workspace\\datasets\\foul-video\\game01.mp4",
