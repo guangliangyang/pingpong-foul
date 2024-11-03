@@ -154,7 +154,7 @@ class TableTennisGame:
                 self.fps = fps
 
         if self.fps is None:
-            self.fps = 30  # Default FPS if none of the sources provided it
+            self.fps = 60  # Default FPS if none of the sources provided it
         self.delay = int(1000 / self.fps)
 
     def get_fps(self):
