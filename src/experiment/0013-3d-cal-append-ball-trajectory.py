@@ -22,8 +22,9 @@ class TableTennisGame:
         self.model = YOLO(model_path, verbose=False).to(self.device)
         print("Using GPU:", self.model.device)
 
-        # Load calibration data for 3D triangulation
+        # Load calibration data and key points for 3D triangulation
         self.load_calibration_data()
+        self.load_key_points()
 
         # Paths for video sources
         self.video_paths = {
@@ -63,6 +64,17 @@ class TableTennisGame:
         self.camera2_rot_matrix, _ = cv2.Rodrigues(self.camera2_rot_vec)
         self.proj_matrix2 = np.dot(self.camera2_intrinsics, np.hstack((self.camera2_rot_matrix, self.camera2_trans_vec)))
         logging.debug("Calibration data loaded successfully.")
+
+    def load_key_points(self):
+        with open('0010-calibration_key_points.json', 'r') as f:
+            key_points_data = json.load(f)
+        self.camera1_points = key_points_data["camera1_points"]
+        self.camera2_points = key_points_data["camera2_points"]
+        logging.debug("2D key points loaded successfully.")
+
+    def draw_key_points(self, frame, points):
+        for (x, y) in points:
+            cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
 
     def calculate_3d_coordinates(self, point1, point2):
         logging.debug(f"Calculating 3D coordinates from points: {point1}, {point2}")
@@ -191,6 +203,10 @@ def main():
         # Draw 2D trajectories on each frame
         game.draw_trajectory(frame1, game.trajectory_2d_camera1)
         game.draw_trajectory(frame2, game.trajectory_2d_camera2)
+
+        # Draw calibration key points on each frame
+        game.draw_key_points(frame1, game.camera1_points)
+        game.draw_key_points(frame2, game.camera2_points)
 
         # Project the fixed 3D line to both frames
         game.project_3d_line_to_2d(frame1, game.proj_matrix1, game.camera1_rot_vec, game.camera1_trans_vec, game.camera1_intrinsics)
