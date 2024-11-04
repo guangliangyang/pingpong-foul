@@ -70,11 +70,19 @@ class TableTennisGame:
             key_points_data = json.load(f)
         self.camera1_points = key_points_data["camera1_points"]
         self.camera2_points = key_points_data["camera2_points"]
-        logging.debug("2D key points loaded successfully.")
+        self.camera1_3d_coordinates = key_points_data["3d_coordinates"][:8]  # First 8 for camera1
+        self.camera2_3d_coordinates = key_points_data["3d_coordinates"][8:]  # Next 8 for camera2
+        logging.debug("2D key points and corresponding 3D coordinates loaded successfully.")
 
-    def draw_key_points(self, frame, points):
-        for (x, y) in points:
+
+    def draw_key_points(self, frame, points, coordinates):
+        for (x, y), (x3d, y3d, z3d) in zip(points, coordinates):
+            # Draw the 2D point
             cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
+            # Display the corresponding 3D coordinates
+            text = f"({x3d:.2f}, {y3d:.2f}, {z3d:.2f})"
+            cv2.putText(frame, text, (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
 
     def calculate_3d_coordinates(self, point1, point2):
         logging.debug(f"Calculating 3D coordinates from points: {point1}, {point2}")
@@ -177,60 +185,66 @@ def main():
     pygame.display.set_caption("Table Tennis 3D Ball Trajectory")
     game = TableTennisGame()
     running = True
+    paused = False  # Add a flag to control the paused state
+
     while running:
-        frame1 = game.read_frame("camera1")
-        frame2 = game.read_frame("camera2")
-
-        # Detect ball position and update 2D trajectory for each camera
-        ball_point1 = game.track_ball(frame1, "camera1", game.trajectory_2d_camera1)
-        ball_point2 = game.track_ball(frame2, "camera2", game.trajectory_2d_camera2)
-
-        # If both ball points are detected, calculate 3D coordinates
-        if ball_point1 is not None and ball_point2 is not None:
-            ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
-            logging.info(f"3D Ball Coordinates: {ball_3d}")
-
-            # Check if we need to reset the trajectories
-            if game.ball_trajectory_3d:
-                game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
-
-            game.ball_trajectory_3d.append(tuple(ball_3d))
-
-            # Limit 3D trajectory to the last 100 points
-            if len(game.ball_trajectory_3d) > 100:
-                game.ball_trajectory_3d.pop(0)
-
-        # Draw 2D trajectories on each frame
-        game.draw_trajectory(frame1, game.trajectory_2d_camera1)
-        game.draw_trajectory(frame2, game.trajectory_2d_camera2)
-
-        # Draw calibration key points on each frame
-        game.draw_key_points(frame1, game.camera1_points)
-        game.draw_key_points(frame2, game.camera2_points)
-
-        # Project the fixed 3D line to both frames
-        game.project_3d_line_to_2d(frame1, game.proj_matrix1, game.camera1_rot_vec, game.camera1_trans_vec, game.camera1_intrinsics)
-        game.project_3d_line_to_2d(frame2, game.proj_matrix2, game.camera2_rot_vec, game.camera2_trans_vec, game.camera2_intrinsics)
-
-        # Update and retrieve the 3D plot surface
-        plot_surface = game.update_plot_surface()
-
-        # Convert frames to a format suitable for Pygame display
-        frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
-        frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
-
-        # Resize frames to fit the Pygame display
-        frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (400, 400)).swapaxes(0, 1))
-        frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (400, 400)).swapaxes(0, 1))
-
-        # Display frames and plot surface on the Pygame window
-        screen.blit(frame1_surface, (0, 0))
-        screen.blit(frame2_surface, (400, 0))
-        screen.blit(plot_surface, (800, 0))
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    paused = not paused  # Toggle paused state when space key is pressed
+
+        if not paused:
+            frame1 = game.read_frame("camera1")
+            frame2 = game.read_frame("camera2")
+
+            # Detect ball position and update 2D trajectory for each camera
+            ball_point1 = game.track_ball(frame1, "camera1", game.trajectory_2d_camera1)
+            ball_point2 = game.track_ball(frame2, "camera2", game.trajectory_2d_camera2)
+
+            # If both ball points are detected, calculate 3D coordinates
+            if ball_point1 is not None and ball_point2 is not None:
+                ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
+                logging.info(f"3D Ball Coordinates: {ball_3d}")
+
+                # Check if we need to reset the trajectories
+                if game.ball_trajectory_3d:
+                    game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
+
+                game.ball_trajectory_3d.append(tuple(ball_3d))
+
+                # Limit 3D trajectory to the last 100 points
+                if len(game.ball_trajectory_3d) > 100:
+                    game.ball_trajectory_3d.pop(0)
+
+            # Draw 2D trajectories on each frame
+            game.draw_trajectory(frame1, game.trajectory_2d_camera1)
+            game.draw_trajectory(frame2, game.trajectory_2d_camera2)
+
+            # Draw calibration key points on each frame
+            game.draw_key_points(frame1, game.camera1_points, game.camera1_3d_coordinates)
+            game.draw_key_points(frame2, game.camera2_points, game.camera2_3d_coordinates)
+
+            # Project the fixed 3D line to both frames
+            game.project_3d_line_to_2d(frame1, game.proj_matrix1, game.camera1_rot_vec, game.camera1_trans_vec, game.camera1_intrinsics)
+            game.project_3d_line_to_2d(frame2, game.proj_matrix2, game.camera2_rot_vec, game.camera2_trans_vec, game.camera2_intrinsics)
+
+            # Update and retrieve the 3D plot surface
+            plot_surface = game.update_plot_surface()
+
+            # Convert frames to a format suitable for Pygame display
+            frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
+            frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
+
+            # Resize frames to fit the Pygame display
+            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (400, 400)).swapaxes(0, 1))
+            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (400, 400)).swapaxes(0, 1))
+
+            # Display frames and plot surface on the Pygame window
+            screen.blit(frame1_surface, (0, 0))
+            screen.blit(frame2_surface, (400, 0))
+            screen.blit(plot_surface, (800, 0))
 
         pygame.display.flip()
         pygame.time.delay(30)
