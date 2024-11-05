@@ -1,4 +1,6 @@
 import json
+import math
+
 import cv2
 import numpy as np
 import pygame
@@ -138,10 +140,71 @@ class TableTennisGame:
             return results.pose_landmarks.landmark
         return None
 
-    def draw_trajectory(self, frame, trajectory_2d):
+    def filter_noise_by_acceleration(self,trajectory_2d, accel_threshold=5):
+        if len(trajectory_2d) < 3:
+            return trajectory_2d  # 如果点数不足，直接返回
+
+        filtered_trajectory = [trajectory_2d[0]]  # 保留第一个点
+        for i in range(1, len(trajectory_2d) - 1):
+            v1 = np.array(trajectory_2d[i]) - np.array(trajectory_2d[i - 1])
+            v2 = np.array(trajectory_2d[i + 1]) - np.array(trajectory_2d[i])
+            accel = np.linalg.norm(v2 - v1)
+            if accel < accel_threshold:  # 如果加速度在阈值内，保留该点
+                filtered_trajectory.append(trajectory_2d[i])
+
+        return filtered_trajectory
+
+    def draw_trajectory(self, frame, trajectory_2d, max_distance=20):
+
+        #trajectory_2d = self.filter_noise_by_acceleration(trajectory_2d)
+        if len(trajectory_2d) < 2:
+            return  # Not enough points to draw
+
         for i in range(1, len(trajectory_2d)):
             cv2.line(frame, trajectory_2d[i - 1], trajectory_2d[i], (255, 0, 0), 2)
             cv2.circle(frame, trajectory_2d[i], 3, (0, 255, 255), -1)
+
+    def draw_3d_net(self):
+        # Coordinates for the table net
+        net_points = [
+            (-0.03, 1.52, 0.185),  # Top left of the net
+            (-0.03, 1.52, 0),  # Bottom left of the net
+            (1.55, 1.52, 0.185),  # Top right of the net
+            (1.55, 1.52, 0)  # Bottom right of the net
+        ]
+
+        # Plot the table net
+        self.ax.plot([net_points[0][0], net_points[1][0]], [net_points[0][1], net_points[1][1]],
+                     [net_points[0][2], net_points[1][2]], 'r-')  # Left vertical line
+
+        self.ax.plot([net_points[2][0], net_points[3][0]], [net_points[2][1], net_points[3][1]],
+                     [net_points[2][2], net_points[3][2]], 'r-')  # Right vertical line
+
+        self.ax.plot([net_points[0][0], net_points[2][0]], [net_points[0][1], net_points[2][1]],
+                     [net_points[0][2], net_points[2][2]], 'r-')  # Top horizontal line
+
+    def draw_3d_cube(self):
+        # Define the 8 corner points of the cube
+        points = np.array([
+            (0, 0, 0), (1.52, 0, 0), (1.52, -1.52, 0), (0, -1.52, 0),  # Bottom surface
+            (0, 0, 1), (1.52, 0, 1), (1.52, -1.52, 1), (0, -1.52, 1)  # Top surface
+        ])
+
+        # Define the edges connecting the points to form the cube
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # Bottom surface edges
+            (4, 5), (5, 6), (6, 7), (7, 4),  # Top surface edges
+            (0, 4), (1, 5), (2, 6), (3, 7)  # Vertical edges
+        ]
+
+        # Draw the edges of the cube
+        for start, end in edges:
+            self.ax.plot(
+                [points[start][0], points[end][0]],
+                [points[start][1], points[end][1]],
+                [points[start][2], points[end][2]],
+                'g:'
+            )
 
     def update_plot_surface(self, skeleton_3d):
         self.ax.cla()
@@ -149,10 +212,28 @@ class TableTennisGame:
         self.ax.set_ylabel("Y")
         self.ax.set_zlabel("Z")
 
-        # Set fixed axis limits to maintain a consistent cubic space
-        self.ax.set_xlim(1, -1)
-        self.ax.set_ylim(-1, 1)
-        self.ax.set_zlim(-1, 1)
+        # Set axis limits to make the x-axis opposite and match y-axis scale
+        self.ax.set_xlim(1.72, -0.2)  # Reverse x-axis
+        self.ax.set_ylim(-1.52, 1.52)
+        self.ax.set_zlim(-0.2, 1.52)
+
+        # Ensure the aspect ratio is equal for x, y, and z
+        self.ax.set_box_aspect([1.92, 3.04, 1.72])  # Aspect ratio equalized
+
+        self.draw_3d_cube()
+        self.draw_3d_net()
+
+        # Draw the table tennis table
+        table_corners = [
+            (0, 0, 0),
+            (1.52, 0, 0),
+            (1.52, 1.52, 0),
+            (0, 1.52, 0),
+            (0, 0, 0)  # Close the loop to complete the rectangle
+        ]
+        x_table, y_table, z_table = zip(*table_corners)
+        self.ax.plot(x_table, y_table, z_table, color="red", linewidth=2, label="Table")
+
 
         # Plot skeleton structure if available
         if skeleton_3d:
@@ -193,16 +274,22 @@ class TableTennisGame:
         return frame
 
     def reset_trajectories_if_needed(self, last_point, current_point):
-        if last_point[1] > 0.02 and current_point[1] < 0:
-            self.ball_trajectory_3d.clear()
-            self.trajectory_2d_camera1.clear()
-            self.trajectory_2d_camera2.clear()
+        if last_point[1] > 0.25 and current_point[1] < 0.15:
+            self.reset_trajectories()
+
+    def reset_trajectories(self):
+        self.ball_trajectory_3d.clear()
+        self.trajectory_2d_camera1.clear()
+        self.trajectory_2d_camera2.clear()
 
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((1200, 400))
-    pygame.display.set_caption("Table Tennis 3D Ball Trajectory")
+    # Set screen width to twice the original width and height
+    screen_width = 2400  # 2 * 1200
+    screen_height = 800  # 2 * 400
+    screen = pygame.display.set_mode((screen_width, screen_height))
+    pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
     game = TableTennisGame()
     running = True
     paused = False
@@ -226,6 +313,23 @@ def main():
 
             ball_point1 = game.track_ball(frame1, "camera1", game.trajectory_2d_camera1)
             ball_point2 = game.track_ball(frame2, "camera2", game.trajectory_2d_camera2)
+
+            if ball_point1 is not None:
+                current_x = ball_point1[0][0]  # x-coordinate of the current point
+
+                # Check if there are at least two previous points to calculate x1 and x2
+                if len(game.trajectory_2d_camera1) >= 2:
+                    last_x = game.trajectory_2d_camera1[-1][0]  # x-coordinate of the last point
+                    second_last_x = game.trajectory_2d_camera1[-2][0]  # x-coordinate of the second-last point
+
+                    # Calculate distances
+                    x1 = abs(last_x - second_last_x)  # Distance between the last two points
+                    x2 = abs(current_x - last_x)  # Distance from the last point to the current point
+
+                    # Reset trajectory if x2 is more than three times x1
+                    if x2 > 3 * x1:
+                        game.reset_trajectories()
+
             if ball_point1 is not None and ball_point2 is not None:
                 ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
                 if game.ball_trajectory_3d:
@@ -241,11 +345,14 @@ def main():
 
             frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
-            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (400, 400)).swapaxes(0, 1))
-            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (400, 400)).swapaxes(0, 1))
+            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (800, 800)).swapaxes(0, 1))
+            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (800, 800)).swapaxes(0, 1))
+
+            # Blit the frames and 3D plot to the screen in a single row
             screen.blit(frame1_surface, (0, 0))
-            screen.blit(frame2_surface, (400, 0))
-            screen.blit(plot_surface, (800, 0))
+            screen.blit(frame2_surface, (800, 0))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (800, 800))
+            screen.blit(plot_surface_resized, (1600, 0))
 
         pygame.display.flip()
         pygame.time.delay(30)
