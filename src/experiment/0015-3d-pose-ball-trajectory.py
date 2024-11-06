@@ -13,6 +13,8 @@ import logging
 import torch
 from ultralytics import YOLO
 from scipy.interpolate import splprep, splev
+from scipy.signal import savgol_filter
+
 
 
 # Set up logging
@@ -208,60 +210,158 @@ class TableTennisGame:
                 'g:'
             )
 
+    def find_key_points0(self,positions,fps = 60.0):
 
-    def find_key_points(self, trajectory, x_acceleration_threshold=5.0):
-        throw_point, highest_point, hit_point = None, None, None
-        throw_frame, highest_frame, hit_frame = None, None, None
+        #positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
+        velocities = []
+        accelerations = []
 
-        # Step 1: Initial detection of throw point based on Y speed
-        for i in range(1, len(trajectory)):
-            frame_no, prev_x, prev_y = trajectory[i - 1]
-            curr_frame_no, curr_x, curr_y = trajectory[i]
-            y_speed = abs(curr_y - prev_y)
-            if i > 1:
-                _, _, last_y = trajectory[i - 2]
-                last_y_speed = abs(prev_y - last_y)
-                if y_speed > 5 * last_y_speed:
-                    throw_point = (curr_x, curr_y)
-                    throw_frame = curr_frame_no
-                    break
+        # Ensure there are enough positions to compute velocities and accelerations
+        if len(positions) < 3:
+            # Not enough data to compute key points
+            return positions[0], positions[0], positions[-1]
 
-        # Step 2: Find the highest point after the throw point
-        if throw_point:
-            throw_index = trajectory.index((throw_frame, *throw_point))
-            highest_y = min([point[2] for point in trajectory[throw_index:]])
-            for frame_no, x, y in trajectory[throw_index:]:
-                if y == highest_y:
-                    highest_point = (x, y)
-                    highest_frame = frame_no
-                    break
+        # Step 1: Compute velocities
+        for i in range(1, len(positions)):
+            x0, y0, z0, f0 = positions[i - 1]
+            x1, y1, z1, f1 = positions[i]
+            dt = (f1 - f0) / fps if f1 != f0 else 1 / fps  # Avoid division by zero
 
-        # Step 3: Backtrack from the highest point to optimize the throw point
-        if highest_point:
-            highest_index = trajectory.index((highest_frame, *highest_point))
-            for i in range(highest_index, -1, -1):
-                frame_no, x, y = trajectory[i]
-                if i < highest_index and y < trajectory[i + 1][2]:  # Y-axis decreases
-                    throw_point = (x, y)
-                    throw_frame = frame_no
-                    break
+            vx = (x1 - x0) / dt
+            vy = (y1 - y0) / dt
+            vz = (z1 - z0) / dt
+            velocities.append((vx, vy, vz, f1))
 
-        # Step 4: Identify the hit point based on X acceleration
-        if highest_point:
-            highest_index = trajectory.index((highest_frame, *highest_point))
-            for i in range(highest_index + 2, len(trajectory)):
-                prev_frame_no, prev_x, prev_y = trajectory[i - 2]
-                last_frame_no, last_x, last_y = trajectory[i - 1]
-                curr_frame_no, curr_x, curr_y = trajectory[i]
-                x_speed_prev = last_x - prev_x
-                x_speed_curr = curr_x - last_x
-                x_acceleration = x_speed_curr - x_speed_prev
-                if x_speed_curr > 0 and x_acceleration > x_acceleration_threshold:
-                    hit_point = (last_x, last_y)
-                    hit_frame = last_frame_no
-                    break
+        # Step 2: Compute accelerations
+        for i in range(1, len(velocities)):
+            vx0, vy0, vz0, _ = velocities[i - 1]
+            vx1, vy1, vz1, _ = velocities[i]
+            dt = 1 / fps  # Time between frames is constant
 
-        return (throw_point, throw_frame), (highest_point, highest_frame), (hit_point, hit_frame)
+            ax = (vx1 - vx0) / dt
+            ay = (vy1 - vy0) / dt
+            az = (vz1 - vz0) / dt
+            accelerations.append((ax, ay, az))
+
+        # Step 3: Identify the Hit Point
+        # Find the maximum acceleration in Y and get the last occurrence
+        if accelerations:
+            max_ay = max(accelerations, key=lambda a: a[1])[1]
+            hit_indices = [i for i, a in enumerate(accelerations) if a[1] == max_ay]
+            hit_acc_index = max(hit_indices)
+            hit_point_index = hit_acc_index + 2  # Adjusting index to match positions
+            if hit_point_index < len(positions):
+                hit_point = positions[hit_point_index]
+            else:
+                hit_point = positions[-1]
+        else:
+            hit_point = positions[-1]
+
+        # Step 4: Identify the Highest Point
+        positions_before_hit = positions[:hit_point_index]
+        if positions_before_hit:
+            highest_z = max(positions_before_hit, key=lambda p: p[2])[2]
+            highest_indices = [i for i, p in enumerate(positions_before_hit) if p[2] == highest_z]
+            highest_index = highest_indices[0]
+            highest_point = positions[highest_index]
+        else:
+            highest_point = positions[0]
+
+        # Step 5: Identify the Throw Point
+        if highest_index >= 2:
+            accelerations_before_highest = accelerations[:highest_index - 1]
+            if accelerations_before_highest:
+                max_az = max(accelerations_before_highest, key=lambda a: a[2])[2]
+                throw_indices = [i for i, a in enumerate(accelerations_before_highest) if a[2] == max_az]
+                throw_acc_index = throw_indices[0]
+                throw_point_index = throw_acc_index + 1  # Adjust index for positions
+                throw_point = positions[throw_point_index]
+            else:
+                throw_point = positions[0]  # Default to first point if not enough data
+        else:
+            throw_point = positions[0]  # Default to first point if not enough data
+
+        return throw_point, highest_point, hit_point
+
+    import numpy as np
+    from scipy.signal import savgol_filter
+
+    def find_key_points(self, positions, fps=60.0):
+        # positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
+
+        # Ensure positions is a NumPy array for easier manipulation
+        positions = np.array(positions)  # shape: (N, 4)
+        if positions.shape[0] < 5:
+            # Not enough data to compute key points
+            return positions[0], positions[0], positions[-1]
+
+        # Extract x, y, z, and frame indices
+        x = positions[:, 0]
+        y = positions[:, 1]
+        z = positions[:, 2]
+        frame_indices = positions[:, 3]
+        time = frame_indices / fps  # Convert frame indices to time
+
+        # Step 1: Apply Savitzky-Golay filter to smooth the data
+        window_size = 11  # Must be odd and less than the length of the data
+        poly_order = 3  # Polynomial order less than window_size
+
+        # Adjust window size if necessary
+        if window_size >= positions.shape[0]:
+            window_size = positions.shape[0] - 1 if positions.shape[0] % 2 == 1 else positions.shape[0] - 2
+            if window_size < 3:
+                # Not enough data for smoothing
+                return positions[0], positions[0], positions[-1]
+
+        x_smooth = savgol_filter(x, window_size, poly_order)
+        y_smooth = savgol_filter(y, window_size, poly_order)
+        z_smooth = savgol_filter(z, window_size, poly_order)
+
+        # Step 2: Compute velocities using smoothed data
+        vx = np.gradient(x_smooth, time)
+        vy = np.gradient(y_smooth, time)
+        vz = np.gradient(z_smooth, time)
+
+        # Step 3: Identify the Highest Point (maximum Z value)
+        highest_point_index = np.argmax(z_smooth)
+        highest_point = positions[highest_point_index]
+
+        # Step 4: Identify the Throw Point
+        # Before the Highest Point, find where vz increases significantly
+        if highest_point_index >= 2:
+            vz_before_highest = vz[:highest_point_index]
+            time_before_highest = time[:highest_point_index]
+            # Compute acceleration in Z
+            az = np.gradient(vz_before_highest, time_before_highest)
+            # Find the index where az is maximum
+            throw_point_index = np.argmax(az)
+            throw_point = positions[throw_point_index]
+        else:
+            throw_point = positions[0]
+
+        # Step 5: Identify the Hit Point
+        # After the Highest Point, find where the speed increases abruptly
+        if highest_point_index < len(vx) - 2:
+            vx_after_highest = vx[highest_point_index:]
+            vy_after_highest = vy[highest_point_index:]
+            vz_after_highest = vz[highest_point_index:]
+            time_after_highest = time[highest_point_index:]
+
+            # Compute speed magnitude
+            speed_after_highest = np.sqrt(vx_after_highest ** 2 + vy_after_highest ** 2 + vz_after_highest ** 2)
+            # Compute speed difference
+            speed_diff = np.diff(speed_after_highest)
+            # Find the index where speed increases abruptly (maximum positive difference)
+            hit_point_relative_index = np.argmax(speed_diff) + 1  # +1 to correct the index after diff
+            hit_point_index = highest_point_index + hit_point_relative_index
+            if hit_point_index < len(positions):
+                hit_point = positions[hit_point_index]
+            else:
+                hit_point = positions[-1]
+        else:
+            hit_point = positions[-1]
+
+        return throw_point, highest_point, hit_point
 
     def update_plot_surface(self, skeleton_3d, rotation_angle=135):
         self.ax.cla()
@@ -277,6 +377,7 @@ class TableTennisGame:
         # Ensure the aspect ratio is equal for x, y, and z
         self.ax.set_box_aspect([1.92, 3.04, 1.72])  # Aspect ratio equalized
 
+        # Draw 3D elements on the plot
         self.draw_3d_cube()
         self.draw_3d_net()
 
@@ -317,6 +418,14 @@ class TableTennisGame:
                     logging.warning(f"Spline interpolation failed: {e}")
                     # Plot trajectory without interpolation if there's an error
                     self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
+
+            # Step: Find and plot key points
+            throw_point, highest_point, hit_point = self.find_key_points(self.ball_trajectory_3d)
+
+            # Plot each key point with a different color
+            self.ax.scatter(*throw_point[:3], color='yellow', s=2, label='Throw Point')
+            self.ax.scatter(*highest_point[:3], color='red', s=2, label='Highest Point')
+            self.ax.scatter(*hit_point[:3], color='red', s=2, label='Hit Point')
 
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
@@ -403,8 +512,11 @@ def main():
                     game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
                 #game.ball_trajectory_3d.append(tuple(ball_3d))
                 game.ball_trajectory_3d.append((*tuple(ball_3d),frame_index))
+
                 if len(game.ball_trajectory_3d) > 100:
                     game.ball_trajectory_3d.pop(0)
+
+
 
             game.draw_trajectory(frame1, game.trajectory_2d_camera1)
             game.draw_trajectory(frame2, game.trajectory_2d_camera2)
