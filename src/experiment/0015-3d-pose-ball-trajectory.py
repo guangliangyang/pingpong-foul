@@ -208,6 +208,61 @@ class TableTennisGame:
                 'g:'
             )
 
+
+    def find_key_points(self, trajectory, x_acceleration_threshold=5.0):
+        throw_point, highest_point, hit_point = None, None, None
+        throw_frame, highest_frame, hit_frame = None, None, None
+
+        # Step 1: Initial detection of throw point based on Y speed
+        for i in range(1, len(trajectory)):
+            frame_no, prev_x, prev_y = trajectory[i - 1]
+            curr_frame_no, curr_x, curr_y = trajectory[i]
+            y_speed = abs(curr_y - prev_y)
+            if i > 1:
+                _, _, last_y = trajectory[i - 2]
+                last_y_speed = abs(prev_y - last_y)
+                if y_speed > 5 * last_y_speed:
+                    throw_point = (curr_x, curr_y)
+                    throw_frame = curr_frame_no
+                    break
+
+        # Step 2: Find the highest point after the throw point
+        if throw_point:
+            throw_index = trajectory.index((throw_frame, *throw_point))
+            highest_y = min([point[2] for point in trajectory[throw_index:]])
+            for frame_no, x, y in trajectory[throw_index:]:
+                if y == highest_y:
+                    highest_point = (x, y)
+                    highest_frame = frame_no
+                    break
+
+        # Step 3: Backtrack from the highest point to optimize the throw point
+        if highest_point:
+            highest_index = trajectory.index((highest_frame, *highest_point))
+            for i in range(highest_index, -1, -1):
+                frame_no, x, y = trajectory[i]
+                if i < highest_index and y < trajectory[i + 1][2]:  # Y-axis decreases
+                    throw_point = (x, y)
+                    throw_frame = frame_no
+                    break
+
+        # Step 4: Identify the hit point based on X acceleration
+        if highest_point:
+            highest_index = trajectory.index((highest_frame, *highest_point))
+            for i in range(highest_index + 2, len(trajectory)):
+                prev_frame_no, prev_x, prev_y = trajectory[i - 2]
+                last_frame_no, last_x, last_y = trajectory[i - 1]
+                curr_frame_no, curr_x, curr_y = trajectory[i]
+                x_speed_prev = last_x - prev_x
+                x_speed_curr = curr_x - last_x
+                x_acceleration = x_speed_curr - x_speed_prev
+                if x_speed_curr > 0 and x_acceleration > x_acceleration_threshold:
+                    hit_point = (last_x, last_y)
+                    hit_frame = last_frame_no
+                    break
+
+        return (throw_point, throw_frame), (highest_point, highest_frame), (hit_point, hit_frame)
+
     def update_plot_surface(self, skeleton_3d, rotation_angle=135):
         self.ax.cla()
         self.ax.set_xlabel("X")
