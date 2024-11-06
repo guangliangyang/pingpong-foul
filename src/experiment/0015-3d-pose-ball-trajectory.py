@@ -297,7 +297,7 @@ class TableTennisGame:
 
         # Smooth 3D trajectory plotting using interpolation
         if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
-            xs, ys, zs = zip(*self.ball_trajectory_3d)
+            xs, ys, zs, frame_index = zip(*self.ball_trajectory_3d)
 
             # Ensure unique points to prevent interpolation errors
             if len(set(zip(xs, ys, zs))) > 3:
@@ -397,9 +397,12 @@ def main():
 
             if ball_point1 is not None and ball_point2 is not None:
                 ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
+                frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
+                print("frame_index=",frame_index)
                 if game.ball_trajectory_3d:
                     game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
-                game.ball_trajectory_3d.append(tuple(ball_3d))
+                #game.ball_trajectory_3d.append(tuple(ball_3d))
+                game.ball_trajectory_3d.append((*tuple(ball_3d),frame_index))
                 if len(game.ball_trajectory_3d) > 100:
                     game.ball_trajectory_3d.pop(0)
 
