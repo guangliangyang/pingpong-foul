@@ -7,7 +7,7 @@ import pygame
 
 # Initialize pygame
 pygame.init()
-screen_width, screen_height = 1280, 720
+screen_width, screen_height = 960, 720
 screen = pygame.display.set_mode((screen_width, screen_height))
 pygame.display.set_caption("YOLO Tracking with Key Points Display")
 
@@ -75,6 +75,7 @@ def find_key_points(trajectory, x_acceleration_threshold=5.0):
 
     # Step 4: Identify the hit point based on X acceleration
     if highest_point:
+        highest_index = trajectory.index((highest_frame, *highest_point))
         for i in range(highest_index + 2, len(trajectory)):
             prev_frame_no, prev_x, prev_y = trajectory[i - 2]
             last_frame_no, last_x, last_y = trajectory[i - 1]
@@ -89,7 +90,7 @@ def find_key_points(trajectory, x_acceleration_threshold=5.0):
             line_distance = math.sqrt((curr_x - last_x) ** 2 + (curr_y - last_y) ** 2)
 
             # Apply both the x_acceleration and line distance filters
-            if x_speed_curr > 0 and x_acceleration > x_acceleration_threshold and line_distance < 120:
+            if x_speed_curr > 0 and x_acceleration > x_acceleration_threshold:# and line_distance < 120:
                 hit_point = (last_x, last_y)
                 hit_frame = last_frame_no
                 break
