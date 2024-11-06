@@ -12,6 +12,8 @@ import matplotlib.pyplot as plt
 import logging
 import torch
 from ultralytics import YOLO
+from scipy.interpolate import splprep, splev
+
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -20,7 +22,7 @@ logging.basicConfig(level=logging.DEBUG)
 class TableTennisGame:
     def __init__(self):
         # Initialize YOLO model for ball tracking
-        model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
+        model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer03.pt"
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = YOLO(model_path, verbose=False).to(self.device)
         print("Using GPU:", self.model.device)
@@ -234,27 +236,32 @@ class TableTennisGame:
         x_table, y_table, z_table = zip(*table_corners)
         self.ax.plot(x_table, y_table, z_table, color="red", linewidth=2, label="Table")
 
-
         # Plot skeleton structure if available
         if skeleton_3d:
             self.draw_skeleton_3d(skeleton_3d)
 
-        # Plot the ball trajectory with color based on speed
-        if self.ball_trajectory_3d:
+        # Smooth 3D trajectory plotting using interpolation
+        if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
             xs, ys, zs = zip(*self.ball_trajectory_3d)
-            num_points = len(self.ball_trajectory_3d)
 
-            # Calculate and plot trajectory lines with varying color based on speed
-            for i in range(1, num_points):
-                speed = np.linalg.norm(np.array(self.ball_trajectory_3d[i]) - np.array(self.ball_trajectory_3d[i - 1]))
-                color = (
-                min(1.0, speed / 5), 0, 1 - min(1.0, speed / 5))  # Color transitions from blue to red based on speed
-                self.ax.plot([xs[i - 1], xs[i]], [ys[i - 1], ys[i]], [zs[i - 1], zs[i]], color=color)
+            # Ensure unique points to prevent interpolation errors
+            if len(set(zip(xs, ys, zs))) > 3:
+                try:
+                    # Interpolate to create a smooth curve
+                    tck, _ = splprep([xs, ys, zs], s=0)
+                    smooth_points = splev(np.linspace(0, 1, 100), tck)
 
-            # Plot individual points with transparency for a trailing effect
-            for i in range(num_points):
-                alpha = (i + 1) / num_points
-                self.ax.scatter(xs[i], ys[i], zs[i], color=(1 - alpha, 0, alpha), s=10, alpha=alpha)
+                    # Plot smooth trajectory
+                    self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
+
+                    # Plot points with a trailing effect
+                    for i in range(len(xs)):
+                        alpha = (i + 1) / len(xs)
+                        self.ax.scatter(xs[i], ys[i], zs[i], color=(1 - alpha, 0, alpha), s=2, alpha=alpha)
+                except ValueError as e:
+                    logging.warning(f"Spline interpolation failed: {e}")
+                    # Plot trajectory without interpolation if there's an error
+                    self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
 
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=135)

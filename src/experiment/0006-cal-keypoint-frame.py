@@ -15,7 +15,7 @@ pygame.display.set_caption("YOLO Tracking with Key Points Display")
 video_width, video_height = screen_width // 2, screen_height // 2
 
 # Model and video paths
-model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer03.pt"
 video_paths = [
     "C:\\workspace\\datasets\\foul-video\\c1.mp4"
 ]
