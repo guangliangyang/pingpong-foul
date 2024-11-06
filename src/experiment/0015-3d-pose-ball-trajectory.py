@@ -112,7 +112,7 @@ class TableTennisGame:
             xs, ys, zs = zip(skeleton_3d[start], skeleton_3d[end])
             self.ax.plot(xs, ys, zs, color='green')  # Set skeleton color to green
 
-    def draw_key_points(self, frame, points, coordinates):
+    def draw_table_points(self, frame, points, coordinates):
         for (x, y), (x3d, y3d, z3d) in zip(points, coordinates):
             cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
             text = f"({x3d:.2f}, {y3d:.2f}, {z3d:.2f})"
@@ -405,8 +405,8 @@ def main():
 
             game.draw_trajectory(frame1, game.trajectory_2d_camera1)
             game.draw_trajectory(frame2, game.trajectory_2d_camera2)
-            game.draw_key_points(frame1, game.camera1_points, game.camera1_3d_coordinates)
-            game.draw_key_points(frame2, game.camera2_points, game.camera2_3d_coordinates)
+            game.draw_table_points(frame1, game.camera1_points, game.camera1_3d_coordinates)
+            game.draw_table_points(frame2, game.camera2_points, game.camera2_3d_coordinates)
 
             frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
