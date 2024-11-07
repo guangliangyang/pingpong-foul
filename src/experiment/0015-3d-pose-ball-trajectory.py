@@ -60,6 +60,8 @@ class TableTennisGame:
         self.ax.set_ylabel("Y")
         self.ax.set_zlabel("Z")
 
+        # Data panel text
+        self.data_panel_text = ""
     def load_calibration_data(self):
         with open('0012-calibration_in_ex_trinsic.json', 'r') as f:
             calibration_data = json.load(f)
@@ -292,6 +294,29 @@ class TableTennisGame:
 
         return throw_point, highest_point, hit_point
 
+    def calculate_angle_with_vertical(self,throw_point, highest_point):
+        # Define the vector from throw point to highest point
+        vector_throw_to_highest = np.array([
+            highest_point[0] - throw_point[0],
+            highest_point[1] - throw_point[1],
+            highest_point[2] - throw_point[2]
+        ])
+
+        # Define the vertical vector along the z-axis from the throw point
+        vertical_vector = np.array([0, 0, 1])  # Vertical in z direction
+
+        # Calculate the dot product and magnitudes
+        dot_product = np.dot(vector_throw_to_highest, vertical_vector)
+        magnitude_throw_to_highest = np.linalg.norm(vector_throw_to_highest)
+        magnitude_vertical = np.linalg.norm(vertical_vector)
+
+        # Calculate the angle in radians
+        angle_rad = np.arccos(dot_product / (magnitude_throw_to_highest * magnitude_vertical))
+
+        # Convert to degrees
+        angle_deg = np.degrees(angle_rad)
+        return angle_deg
+
     def update_plot_surface(self, skeleton_3d, rotation_angle=135):
         self.ax.cla()
         self.ax.set_xlabel("X")
@@ -325,36 +350,59 @@ class TableTennisGame:
         if skeleton_3d:
             self.draw_skeleton_3d(skeleton_3d)
 
-        # Smooth 3D trajectory plotting using interpolation
+        # Only draw the 3D trajectory between the throw point and hit point
         if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
-            xs, ys, zs, frame_index = zip(*self.ball_trajectory_3d)
-
-            # Ensure unique points to prevent interpolation errors
-            if len(set(zip(xs, ys, zs))) > 3:
-                try:
-                    # Interpolate to create a smooth curve
-                    tck, _ = splprep([xs, ys, zs], s=0)
-                    smooth_points = splev(np.linspace(0, 1, 100), tck)
-
-                    # Plot smooth trajectory
-                    self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
-
-                    # Plot points with a trailing effect
-                    for i in range(len(xs)):
-                        alpha = (i + 1) / len(xs)
-                        self.ax.scatter(xs[i], ys[i], zs[i], color=(1 - alpha, 0, alpha), s=2, alpha=alpha)
-                except ValueError as e:
-                    logging.warning(f"Spline interpolation failed: {e}")
-                    # Plot trajectory without interpolation if there's an error
-                    self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
-
-            # Step: Find and plot key points
             throw_point, highest_point, hit_point = self.find_key_points(self.ball_trajectory_3d)
+
+            # Find the indices of throw point and hit point in the trajectory
+            try:
+                throw_index = self.ball_trajectory_3d.index(tuple(throw_point))
+                hit_index = self.ball_trajectory_3d.index(tuple(hit_point))
+            except ValueError:
+                logging.warning("Throw or hit point not found in trajectory data.")
+                throw_index, hit_index = 0, len(self.ball_trajectory_3d) - 1
+
+            # Extract the segment of the trajectory between throw point and hit point
+            trajectory_segment = self.ball_trajectory_3d[throw_index:hit_index + 1]
+
+            # Smooth 3D trajectory plotting using interpolation
+            if len(trajectory_segment) > 3:
+                xs, ys, zs, frame_index = zip(*trajectory_segment)
+
+                # Ensure unique points to prevent interpolation errors
+                if len(set(zip(xs, ys, zs))) > 3:
+                    try:
+                        # Interpolate to create a smooth curve
+                        tck, _ = splprep([xs, ys, zs], s=0)
+                        smooth_points = splev(np.linspace(0, 1, 100), tck)
+
+                        # Plot smooth trajectory
+                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
+
+                        # Plot points with a trailing effect
+                        for i in range(len(xs)):
+                            alpha = (i + 1) / len(xs)
+                            self.ax.scatter(xs[i], ys[i], zs[i], color=(1 - alpha, 0, alpha), s=2, alpha=alpha)
+                    except ValueError as e:
+                        logging.warning(f"Spline interpolation failed: {e}")
+                        # Plot trajectory without interpolation if there's an error
+                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
 
             # Plot each key point with a different color
             self.ax.scatter(*throw_point[:3], color='yellow', s=2, label='Throw Point')
             self.ax.scatter(*highest_point[:3], color='red', s=2, label='Highest Point')
-            self.ax.scatter(*hit_point[:3], color='red', s=2, label='Hit Point')
+            self.ax.scatter(*hit_point[:3], color='green', s=2, label='Hit Point')
+
+            # Calculate the angle between throw-highest line and vertical (z) line at throw point
+            angle = self.calculate_angle_with_vertical(throw_point, highest_point)
+
+            # Update the data panel text
+            self.data_panel_text = (
+                f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
+                f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
+                f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
+                f"Angle with Vertical: {angle:.2f} degrees"
+            )
 
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
@@ -365,6 +413,21 @@ class TableTennisGame:
         plot_surface = pygame.image.fromstring(canvas.tostring_rgb(), canvas.get_width_height(), "RGB")
         logging.debug("3D plot surface updated.")
         return plot_surface
+
+    def draw_data_panel(self, screen, font, color=(255, 255, 255)):
+        data_panel_surface = pygame.Surface((640, 480))
+        data_panel_surface.fill((50, 50, 50))  # Dark gray background
+
+        # Render and display the text on the data panel
+        lines = self.data_panel_text.split("\n")
+        y_offset = 10
+        for line in lines:
+            text_surface = font.render(line, True, color)
+            data_panel_surface.blit(text_surface, (10, y_offset))
+            y_offset += font.get_linesize() + 5
+
+        # Blit data panel to the main screen
+        screen.blit(data_panel_surface, (0, 480))
 
     def read_frame(self, camera):
         ret, frame = self.caps[camera].read()
@@ -392,8 +455,8 @@ def main():
     screen = pygame.display.set_mode((screen_width, screen_height))
     pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
     game = TableTennisGame()
-    running = True
-    paused = False
+    font = pygame.font.Font(None, 24)
+    running, paused = True, False
     rotation_angle = 0  # Initial angle for rotating the 3D plot
     last_skeleton_3d = None  # Store the last skeleton data
 
@@ -468,6 +531,7 @@ def main():
             data_panel = pygame.Surface((video_width*2, video_height))
             data_panel.fill((50, 50, 50))  # Dark gray placeholder color
             screen.blit(data_panel, (0, video_height))
+            game.draw_data_panel(screen, font)
 
         else:
             # Rotate the 3D plot while paused
@@ -480,6 +544,8 @@ def main():
             screen.blit(frame1_surface, (0, 0))
             screen.blit(frame2_surface, (video_width, 0))
             screen.blit(data_panel, (0, video_height))
+            game.draw_data_panel(screen, font)
+
         pygame.display.flip()
         pygame.time.delay(30)
 
