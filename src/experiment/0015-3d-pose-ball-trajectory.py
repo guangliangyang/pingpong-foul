@@ -38,6 +38,7 @@ class TableTennisGame:
         self.mp_pose = mp.solutions.pose
         self.pose_camera1 = self.mp_pose.Pose()
         self.pose_camera2 = self.mp_pose.Pose()
+        self.action_segments = []
 
         # Load calibration data and key points for 3D triangulation
         self.load_calibration_data()
@@ -518,6 +519,19 @@ class TableTennisGame:
         if current_fouls:
             self.foul_serve_count += 1
 
+        start_frame_index = self.ball_trajectory_3d[0][3]  # First frame index
+        end_frame_index = self.ball_trajectory_3d[-1][3]  # Last frame index
+        action_segment = {
+            'start_frame': start_frame_index,
+            'throw_frame': int(throw_point[3]),
+            'highest_frame': int(highest_point[3]),
+            'hit_frame': int(hit_point[3]),
+            'end_frame': end_frame_index,
+            'current_fouls': current_fouls.copy()  # Store fouls for this action
+        }
+        self.action_segments.append(action_segment)
+
+
         # 更新数据面板文本，包括发球和犯规统计
         self.data_panel_text = (
             f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
@@ -558,6 +572,7 @@ def main():
         if not paused:
             frame1 = game.read_frame("camera1")
             frame2 = game.read_frame("camera2")
+            frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
             game.VIDEO_WIDTH, game.VIDEO_HEIGHT = frame1.shape[1], frame1.shape[0]
             landmarks1 = game.process_frame_for_skeleton(frame1, game.pose_camera1, "camera1")
             landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
@@ -586,7 +601,6 @@ def main():
 
             if ball_point1 is not None and ball_point2 is not None:
                 ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
-                frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
                 print("frame_index=",frame_index)
                 if game.ball_trajectory_3d:
                     game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
@@ -610,21 +624,7 @@ def main():
 
             plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
 
-            # Define the layout positions
-            screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
-            screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH/2, 0))  # Top-right: Camera 2
-            screen.blit(plot_surface_resized, (0, 0))  # Bottom-left: 3D plot
 
-            # Placeholder for future data panel (Bottom-right)
-            data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
-            data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-            #screen.blit(data_panel,(screen_width - VIDEO_WIDTH+50,VIDEO_HEIGHT/2 ))
-
-
-            #screen.blit(data_panel_surface, (x_loc, y_loc))
-            game.draw_data_panel(data_panel,screen, font,screen_width - VIDEO_WIDTH,VIDEO_HEIGHT/2)
-
-            draw_title(game, screen, screen_width)
 
 
         else:
@@ -634,17 +634,86 @@ def main():
             plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
             screen.blit(plot_surface_resized, (0, 0))
 
-            # Draw static elements
-            screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
-            screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH/2, 0))  # Top-right: Camera 2
-            game.draw_data_panel(data_panel,screen, font,screen_width - VIDEO_WIDTH,VIDEO_HEIGHT/2)
+        # Define the layout positions
+        screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
+        screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH / 2, 0))  # Top-right: Camera 2
+        screen.blit(plot_surface_resized, (0, 0))  # Bottom-left: 3D plot
 
-            draw_title(game, screen, screen_width)
+        bar_height, bar_y = draw_action_segmentation(frame_index, game, screen, screen_width)
+
+        data_panel_y = bar_y + bar_height + 10
+        data_panel = pygame.Surface((VIDEO_WIDTH, data_panel_y))
+        data_panel.fill((50, 50, 50))  # Dark gray placeholder color
+        game.draw_data_panel(data_panel, screen, font, screen_width - VIDEO_WIDTH, data_panel_y)
+
+        draw_title(game, screen, screen_width)
 
         pygame.display.flip()
 
     pygame.quit()
     sys.exit()
+
+
+def draw_action_segmentation(frame_index, game, screen, screen_width):
+    # Draw the horizontal bar for action segments
+    bar_height = 20
+    bar_width = VIDEO_WIDTH
+    bar_x = screen_width - VIDEO_WIDTH
+    bar_y = VIDEO_HEIGHT / 2  # Position the bar under the video feeds
+    # Draw the bar background
+    pygame.draw.rect(screen, (200, 200, 200), (bar_x, bar_y, bar_width, bar_height))  # Light gray background
+    # Calculate min and max frame indices
+    if game.action_segments:
+        min_frame_index = min(segment['start_frame'] for segment in game.action_segments)
+        max_frame_index = max(segment['end_frame'] for segment in game.action_segments)
+    else:
+        min_frame_index = 0
+        max_frame_index = frame_index  # Use the current frame index
+    # Avoid division by zero
+    if max_frame_index == min_frame_index:
+        max_frame_index += 1
+    # For each action segment, draw its representation on the bar
+    for segment in game.action_segments:
+        start_frame = segment['start_frame']
+        end_frame = segment['end_frame']
+
+        start_x = bar_x + ((start_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        end_x = bar_x + ((end_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+
+        segment_width = end_x - start_x
+
+        # Determine color based on fouls
+        if segment['current_fouls']:
+            color = (255, 0, 0)  # Red for fouls
+        else:
+            color = (0, 255, 0)  # Green for no fouls
+
+        # Draw the rectangle for the action segment
+        pygame.draw.rect(screen, color, (start_x, bar_y, segment_width, bar_height))
+
+        # Draw markers for throw_frame, highest_frame, hit_frame
+        throw_frame = segment['throw_frame']
+        highest_frame = segment['highest_frame']
+        hit_frame = segment['hit_frame']
+
+        # Calculate positions
+        throw_x = bar_x + ((throw_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        highest_x = bar_x + (
+                (highest_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        hit_x = bar_x + ((hit_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+
+        # Draw markers
+        pygame.draw.line(screen, (0, 0, 255), (throw_x, bar_y), (throw_x, bar_y + bar_height),
+                         2)  # Blue line for throw point
+        pygame.draw.line(screen, (255, 255, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height),
+                         2)  # Yellow line for highest point
+        pygame.draw.line(screen, (255, 165, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height),
+                         2)  # Orange line for hit point
+    # Optionally, draw current frame marker
+    current_x = bar_x + ((frame_index - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+    pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height),
+                     1)  # White line for current frame
+    return bar_height, bar_y
 
 
 def draw_title(game, screen, screen_width):
