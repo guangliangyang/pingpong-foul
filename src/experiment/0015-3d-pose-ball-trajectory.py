@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 VIDEO_WIDTH = 640
 VIDEO_HEIGHT = 480
+ACTION_3D_Y_SPLIT = 0.4
 
 class TableTennisGame:
     def __init__(self):
@@ -38,7 +39,7 @@ class TableTennisGame:
 
         # Load calibration data and key points for 3D triangulation
         self.load_calibration_data()
-        self.load_key_points()
+        self.load_key_points_for_calibration()
 
         # Paths for video sources
         self.video_paths = {
@@ -95,7 +96,7 @@ class TableTennisGame:
                                    np.hstack((self.camera2_rot_matrix, self.camera2_trans_vec)))
         logging.debug("Calibration data loaded successfully.")
 
-    def load_key_points(self):
+    def load_key_points_for_calibration(self):
         with open('0010-calibration_key_points.json', 'r') as f:
             key_points_data = json.load(f)
         self.camera1_points = key_points_data["camera1_points"]
@@ -131,7 +132,7 @@ class TableTennisGame:
             xs, ys, zs = zip(skeleton_3d[start], skeleton_3d[end])
             self.ax.plot(xs, ys, zs, color='green')  # Set skeleton color to green
 
-    def draw_table_points(self, frame, points, coordinates):
+    def draw_table_points_calibration(self, frame, points, coordinates):
         for (x, y), (x3d, y3d, z3d) in zip(points, coordinates):
             cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
             text = f"({x3d:.2f}, {y3d:.2f}, {z3d:.2f})"
@@ -142,15 +143,21 @@ class TableTennisGame:
         points_3d = points_4d_homogeneous[:3] / points_4d_homogeneous[3]
         return points_3d.flatten()
 
-    def track_ball(self, frame, camera_key, trajectory_2d):
+    def track_ball_2d(self, frame, camera_key, trajectory_2d):
         results = self.model.track(frame, persist=True, tracker="bytetrack.yaml")
         if results[0].boxes:
             box = results[0].boxes[0]
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-            trajectory_2d.append((cx, cy))
+            frame_index = int(self.caps[camera_key].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
+
+            # Append (x, y, frame_index) to trajectory_2d
+            trajectory_2d.append((cx, cy, frame_index))
+
+            # Limit the length of trajectory_2d to avoid overflow
             if len(trajectory_2d) > 100:
                 trajectory_2d.pop(0)
+
             return np.array([[cx], [cy]], dtype=np.float32)
         return None
 
@@ -160,32 +167,46 @@ class TableTennisGame:
         if results.pose_landmarks:
             return results.pose_landmarks.landmark
         return None
+    #
+    # def filter_noise_by_acceleration(self,trajectory_2d, accel_threshold=5):
+    #     if len(trajectory_2d) < 3:
+    #         return trajectory_2d  # 如果点数不足，直接返回
+    #
+    #     filtered_trajectory = [trajectory_2d[0]]  # 保留第一个点
+    #     for i in range(1, len(trajectory_2d) - 1):
+    #         v1 = np.array(trajectory_2d[i]) - np.array(trajectory_2d[i - 1])
+    #         v2 = np.array(trajectory_2d[i + 1]) - np.array(trajectory_2d[i])
+    #         accel = np.linalg.norm(v2 - v1)
+    #         if accel < accel_threshold:  # 如果加速度在阈值内，保留该点
+    #             filtered_trajectory.append(trajectory_2d[i])
+    #
+    #     return filtered_trajectory
 
-    def filter_noise_by_acceleration(self,trajectory_2d, accel_threshold=5):
-        if len(trajectory_2d) < 3:
-            return trajectory_2d  # 如果点数不足，直接返回
+    def draw_2d_trajectory(self, frame, trajectory_2d, max_distance=20):
+        # Find the frame index where y > ACTION_3D_Y_SPLIT
+        cutoff_index = None
+        for i, point in enumerate(self.ball_trajectory_3d):
+            _, y, _, frame_index = point
+            if y > ACTION_3D_Y_SPLIT:
+                cutoff_index = frame_index
+                break
 
-        filtered_trajectory = [trajectory_2d[0]]  # 保留第一个点
-        for i in range(1, len(trajectory_2d) - 1):
-            v1 = np.array(trajectory_2d[i]) - np.array(trajectory_2d[i - 1])
-            v2 = np.array(trajectory_2d[i + 1]) - np.array(trajectory_2d[i])
-            accel = np.linalg.norm(v2 - v1)
-            if accel < accel_threshold:  # 如果加速度在阈值内，保留该点
-                filtered_trajectory.append(trajectory_2d[i])
+        # Filter the trajectory points to only include those before the cutoff frame index
+        if cutoff_index is not None:
+            filtered_trajectory = [pt for pt in trajectory_2d if pt[2] < cutoff_index]
 
-        return filtered_trajectory
+        else:
+            filtered_trajectory = trajectory_2d  # If no cutoff, draw the full trajectory
 
-    def draw_trajectory(self, frame, trajectory_2d, max_distance=20):
-
-        #trajectory_2d = self.filter_noise_by_acceleration(trajectory_2d)
-        if len(trajectory_2d) < 2:
+        # Now draw the filtered trajectory
+        if len(filtered_trajectory) < 2:
             return  # Not enough points to draw
 
-        for i in range(1, len(trajectory_2d)):
-            cv2.line(frame, trajectory_2d[i - 1], trajectory_2d[i], (255, 0, 0), 2)
-            cv2.circle(frame, trajectory_2d[i], 3, (0, 255, 255), -1)
+        for i in range(1, len(filtered_trajectory)):
+            cv2.line(frame, filtered_trajectory[i - 1][:2], filtered_trajectory[i][:2], (255, 0, 0), 2)
+            cv2.circle(frame, filtered_trajectory[i][:2], 3, (0, 255, 255), -1)
 
-    def draw_3d_net(self):
+    def draw_3d_table_net(self):
         # Coordinates for the table net
         net_points = [
             (-0.03, 1.52, 0.185),  # Top left of the net
@@ -204,7 +225,7 @@ class TableTennisGame:
         self.ax.plot([net_points[0][0], net_points[2][0]], [net_points[0][1], net_points[2][1]],
                      [net_points[0][2], net_points[2][2]], 'r-')  # Top horizontal line
 
-    def draw_3d_cube(self):
+    def draw_serve_area_3d_cube(self):
         # Define the 8 corner points of the cube
         points = np.array([
             (0, 0, 0), (1.52, 0, 0), (1.52, -1.52, 0), (0, -1.52, 0),  # Bottom surface
@@ -228,7 +249,7 @@ class TableTennisGame:
             )
 
 
-    def find_key_points(self, positions, fps=60.0):
+    def find_serve_key_points(self, positions, fps=60.0):
         # positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
 
         # Ensure positions is a NumPy array for easier manipulation
@@ -332,7 +353,7 @@ class TableTennisGame:
         angle_deg = np.degrees(angle_rad)
         return angle_deg
 
-    def update_plot_surface(self, skeleton_3d, rotation_angle=135):
+    def update_3D_plot_surface(self, skeleton_3d, rotation_angle=135):
         self.ax.cla()
         self.ax.set_xlabel("X")
         self.ax.set_ylabel("Y")
@@ -347,8 +368,8 @@ class TableTennisGame:
         self.ax.set_box_aspect([1.92, 3.04, 1.72])  # Aspect ratio equalized
 
         # Draw 3D elements on the plot
-        self.draw_3d_cube()
-        self.draw_3d_net()
+        self.draw_serve_area_3d_cube()
+        self.draw_3d_table_net()
 
         # Draw the table tennis table
         table_corners = [
@@ -367,7 +388,7 @@ class TableTennisGame:
 
         # Only draw the 3D trajectory between the throw point and hit point
         if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
-            throw_point, highest_point, hit_point = self.find_key_points(self.ball_trajectory_3d)
+            throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
 
             # Find the indices of throw point and hit point in the trajectory
             try:
@@ -447,15 +468,15 @@ class TableTennisGame:
         return frame
 
     def check_and_perform_foul_statistics(self):
-        """检查是否需要进行犯规统计，条件是 last_point[1] > 0.25 且未统计过"""
+        """检查是否需要进行犯规统计，条件是 last_point[1] > ACTION_3D_Y_SPLIT 且未统计过"""
         if len(self.ball_trajectory_3d) > 1 and not self.foul_checked:
             last_point = self.ball_trajectory_3d[-1]
-            if last_point[1] > 0.25:
+            if last_point[1] > ACTION_3D_Y_SPLIT:
                 self.perform_foul_check_and_statistics()
                 self.foul_checked = True  # 设置标志，避免重复统计
 
     def reset_trajectories_if_needed(self, last_point, current_point):
-        if last_point[1] > 0.25 and current_point[1] < 0.15:
+        if last_point[1] > ACTION_3D_Y_SPLIT and current_point[1] < 0.2:
             self.reset_trajectories()
 
     def reset_trajectories(self):
@@ -470,7 +491,7 @@ class TableTennisGame:
             return  # 如果轨迹数据太少，跳过检查
 
         # 计算关键点
-        throw_point, highest_point, hit_point = self.find_key_points(self.ball_trajectory_3d)
+        throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
 
         # 当前轨迹的违规规则列表
         current_fouls = []
@@ -549,10 +570,10 @@ def main():
             landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
             skeleton_3d = game.calculate_3d_skeleton(landmarks1, landmarks2, game.VIDEO_WIDTH, game.VIDEO_HEIGHT) if landmarks1 and landmarks2 else None
             last_skeleton_3d = skeleton_3d  # Update the last known skeleton data
-            plot_surface = game.update_plot_surface(skeleton_3d)
+            plot_surface = game.update_3D_plot_surface(skeleton_3d)
 
-            ball_point1 = game.track_ball(frame1, "camera1", game.trajectory_2d_camera1)
-            ball_point2 = game.track_ball(frame2, "camera2", game.trajectory_2d_camera2)
+            ball_point1 = game.track_ball_2d(frame1, "camera1", game.trajectory_2d_camera1)
+            ball_point2 = game.track_ball_2d(frame2, "camera2", game.trajectory_2d_camera2)
 
             if ball_point1 is not None:
                 current_x = ball_point1[0][0]  # x-coordinate of the current point
@@ -584,10 +605,10 @@ def main():
 
 
 
-            game.draw_trajectory(frame1, game.trajectory_2d_camera1)
-            game.draw_trajectory(frame2, game.trajectory_2d_camera2)
-            game.draw_table_points(frame1, game.camera1_points, game.camera1_3d_coordinates)
-            game.draw_table_points(frame2, game.camera2_points, game.camera2_3d_coordinates)
+            game.draw_2d_trajectory(frame1, game.trajectory_2d_camera1)
+            game.draw_2d_trajectory(frame2, game.trajectory_2d_camera2)
+            game.draw_table_points_calibration(frame1, game.camera1_points, game.camera1_3d_coordinates)
+            game.draw_table_points_calibration(frame2, game.camera2_points, game.camera2_3d_coordinates)
 
             frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
@@ -610,7 +631,7 @@ def main():
         else:
             # Rotate the 3D plot while paused
             rotation_angle = (rotation_angle + 1) % 360
-            plot_surface = game.update_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
+            plot_surface = game.update_3D_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
             plot_surface_resized = pygame.transform.scale(plot_surface, (VIDEO_WIDTH*2, VIDEO_HEIGHT*2))
             screen.blit(plot_surface_resized, (VIDEO_WIDTH*2, 0))
 
