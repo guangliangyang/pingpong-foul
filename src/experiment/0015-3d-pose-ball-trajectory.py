@@ -375,6 +375,7 @@ class TableTennisGame:
         # Plot skeleton structure if available
         if skeleton_3d:
             self.draw_skeleton_3d(skeleton_3d)
+            self.ax.plot([], [], [], color='green', label='Skeleton')  # Add to legend
 
         # Only draw the 3D trajectory between the throw point and hit point
         if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
@@ -403,7 +404,8 @@ class TableTennisGame:
                         smooth_points = splev(np.linspace(0, 1, 100), tck)
 
                         # Plot smooth trajectory
-                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
+                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2,
+                                     label='Ball Trajectory')
 
                         # Plot points with a trailing effect
                         for i in range(len(xs)):
@@ -412,17 +414,24 @@ class TableTennisGame:
                     except ValueError as e:
                         logging.warning(f"Spline interpolation failed: {e}")
                         # Plot trajectory without interpolation if there's an error
-                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
+                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--", label='Ball Trajectory')
 
-            # Plot each key point with a different color
-            self.ax.scatter(*throw_point[:3], color='yellow', s=2, label='Throw Point')
-            self.ax.scatter(*highest_point[:3], color='red', s=2, label='Highest Point')
-            self.ax.scatter(*hit_point[:3], color='green', s=2, label='Hit Point')
+            # Plot each key point with a different color and add labels
+            self.ax.scatter(*throw_point[:3], color='yellow', s=50, label='Throw Point')
+            self.ax.scatter(*highest_point[:3], color='red', s=50, label='Highest Point')
+            self.ax.scatter(*hit_point[:3], color='green', s=50, label='Hit Point')
 
             self.check_and_perform_foul_statistics()
 
+        # Draw the serve area cube (dashed green cube)
+        self.draw_serve_area_3d_cube()
+        self.ax.plot([], [], [], 'g--', label='Serve Area')  # Add to legend
+
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
+
+        # Add legend to the plot
+        self.ax.legend(loc='upper left')
 
         # Convert the Matplotlib plot to a Pygame surface
         canvas = FigureCanvas(self.fig)
@@ -430,7 +439,6 @@ class TableTennisGame:
         plot_surface = pygame.image.fromstring(canvas.tostring_rgb(), canvas.get_width_height(), "RGB")
         logging.debug("3D plot surface updated.")
         return plot_surface
-
 
     def create_label_surface(self, text, font, bg, fg):
         pygame_font = pygame.font.SysFont(font[0], font[1])
@@ -639,19 +647,29 @@ def main():
         screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH / 2, 0))  # Top-right: Camera 2
         screen.blit(plot_surface_resized, (0, 0))  # Bottom-left: 3D plot
 
-        bar_height, bar_y = draw_action_segmentation(frame_index, game, screen, screen_width)
-
-        data_panel_y = bar_y + bar_height + 10
-        data_panel = pygame.Surface((VIDEO_WIDTH, data_panel_y))
+        draw_camera_title(game, screen, screen_width)
+        bar_height, bar_y ,bar_x= draw_action_segmentation(frame_index, game, screen, screen_width)
+        data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
         data_panel.fill((50, 50, 50))  # Dark gray placeholder color
+        data_panel_y = bar_y + bar_height + 50
         game.draw_data_panel(data_panel, screen, font, screen_width - VIDEO_WIDTH, data_panel_y)
-
         draw_title(game, screen, screen_width)
 
         pygame.display.flip()
 
     pygame.quit()
     sys.exit()
+
+
+def draw_camera_title(game, screen, screen_width):
+    # Add labels to the camera panels
+    label_font = pygame.font.SysFont("Arial", 20)
+    left_label = label_font.render("Left Camera", True, (255, 255, 255))
+    right_label = label_font.render("Right Camera", True, (255, 255, 255))
+    # Position labels on the video panels
+    screen.blit(left_label, (screen_width - game.VIDEO_WIDTH + 10, 10))  # Left top corner of left camera
+    right_label_width = right_label.get_width()
+    screen.blit(right_label, (screen_width - right_label_width - 10, 10))  # Right top corner of right camera
 
 
 def draw_action_segmentation(frame_index, game, screen, screen_width):
@@ -713,7 +731,40 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     current_x = bar_x + ((frame_index - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
     pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height),
                      1)  # White line for current frame
-    return bar_height, bar_y
+
+    # Add legend under the bar
+    legend_font = pygame.font.SysFont("Arial", 16)
+    legend_x = bar_x
+    legend_y = bar_y + bar_height + 10  # Position directly under the bar
+
+    # Draw colored rectangles with labels
+    # Green rectangle for actions without fouls
+    pygame.draw.rect(screen, (0, 255, 0), (legend_x, legend_y, 20, 10))
+    legend_text_no_foul = legend_font.render("No Foul", True, (255, 255, 255))
+    screen.blit(legend_text_no_foul, (legend_x + 25, legend_y - 5))
+
+    # Red rectangle for actions with fouls
+    pygame.draw.rect(screen, (255, 0, 0), (legend_x + 100, legend_y, 20, 10))
+    legend_text_foul = legend_font.render("Foul", True, (255, 255, 255))
+    screen.blit(legend_text_foul, (legend_x + 125, legend_y - 5))
+
+    # Lines for key points
+    # Blue line for throw point
+    pygame.draw.line(screen, (0, 0, 255), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5), 2)
+    legend_text_throw = legend_font.render("Throw Point", True, (255, 255, 255))
+    screen.blit(legend_text_throw, (legend_x + 225, legend_y - 5))
+
+    # Yellow line for highest point
+    pygame.draw.line(screen, (255, 255, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5), 2)
+    legend_text_highest = legend_font.render("Highest Point", True, (255, 255, 255))
+    screen.blit(legend_text_highest, (legend_x + 375, legend_y - 5))
+
+    # Orange line for hit point
+    pygame.draw.line(screen, (255, 165, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5), 2)
+    legend_text_hit = legend_font.render("Hit Point", True, (255, 255, 255))
+    screen.blit(legend_text_hit, (legend_x + 525, legend_y - 5))
+
+    return bar_height, bar_y,bar_x
 
 
 def draw_title(game, screen, screen_width):
