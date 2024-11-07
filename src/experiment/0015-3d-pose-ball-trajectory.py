@@ -48,6 +48,16 @@ class TableTennisGame:
             "camera2": cv2.VideoCapture(self.video_paths['camera2'])
         }
 
+        self.foul_stats = {
+            'Tossed from Below Table Surface': 0,
+            'In Front of the End Line': 0,
+            'Backward Angle More Than 30 Degrees': 0,
+            'Tossed Upward Less Than 16 cm': 0
+        }
+        self.serve_count = 0  # 记录球发球动作的次数
+        self.foul_serve_count = 0
+        self.last_frame_index = None  # 记录上一发球动作的最后帧索引
+
         # Store 3D ball trajectory and separate 2D trajectories for each camera
         self.ball_trajectory_3d = []
         self.trajectory_2d_camera1 = []
@@ -393,17 +403,6 @@ class TableTennisGame:
             self.ax.scatter(*highest_point[:3], color='red', s=2, label='Highest Point')
             self.ax.scatter(*hit_point[:3], color='green', s=2, label='Hit Point')
 
-            # Calculate the angle between throw-highest line and vertical (z) line at throw point
-            angle = self.calculate_angle_with_vertical(throw_point, highest_point)
-
-            # Update the data panel text
-            self.data_panel_text = (
-                f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
-                f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
-                f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
-                f"Angle with Vertical: {angle:.2f} degrees"
-            )
-
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
 
@@ -418,16 +417,20 @@ class TableTennisGame:
         data_panel_surface = pygame.Surface((640, 480))
         data_panel_surface.fill((50, 50, 50))  # Dark gray background
 
-        # Render and display the text on the data panel
+        # Render and display text
         lines = self.data_panel_text.split("\n")
         y_offset = 10
         for line in lines:
-            text_surface = font.render(line, True, color)
+            # Set text color to yellow if it's part of the current fouls
+            if line.startswith("Current Fouls:") and "None" not in line:
+                text_surface = font.render(line, True, (255, 255, 0))  # Yellow for fouls
+            else:
+                text_surface = font.render(line, True, color)
             data_panel_surface.blit(text_surface, (10, y_offset))
             y_offset += font.get_linesize() + 5
 
-        # Blit data panel to the main screen
-        screen.blit(data_panel_surface, (0, 480))
+        # Draw data panel on the main screen
+        screen.blit(data_panel_surface, (640, 480))
 
     def read_frame(self, camera):
         ret, frame = self.caps[camera].read()
@@ -438,6 +441,7 @@ class TableTennisGame:
 
     def reset_trajectories_if_needed(self, last_point, current_point):
         if last_point[1] > 0.25 and current_point[1] < 0.15:
+            self.perform_foul_check_and_statistics()
             self.reset_trajectories()
 
     def reset_trajectories(self):
@@ -445,6 +449,53 @@ class TableTennisGame:
         self.trajectory_2d_camera1.clear()
         self.trajectory_2d_camera2.clear()
 
+    def perform_foul_check_and_statistics(self):
+        """在当前3D轨迹结束时，进行一次犯规检查和统计更新"""
+        if len(self.ball_trajectory_3d) < 5:
+            return  # 如果轨迹数据太少，跳过检查
+
+        # 计算关键点
+        throw_point, highest_point, hit_point = self.find_key_points(self.ball_trajectory_3d)
+
+        # 当前轨迹的违规规则列表
+        current_fouls = []
+
+        # 检查违规条件
+        if throw_point[2] < 0:
+            self.foul_stats['Tossed from Below Table Surface'] += 1
+            current_fouls.append('Tossed from Below Table Surface')
+        if throw_point[1] > 0 or highest_point[1] > 0 or hit_point[1] > 0:
+            self.foul_stats['In Front of the End Line'] += 1
+            current_fouls.append('In Front of the End Line')
+        angle_with_vertical = self.calculate_angle_with_vertical(throw_point, highest_point)
+        if angle_with_vertical > 30:
+            self.foul_stats['Backward Angle More Than 30 Degrees'] += 1
+            current_fouls.append('Backward Angle More Than 30 Degrees')
+        if (highest_point[2] - throw_point[2]) < 0.16:
+            self.foul_stats['Tossed Upward Less Than 16 cm'] += 1
+            current_fouls.append('Tossed Upward Less Than 16 cm')
+
+        # 更新发球次数统计
+        self.serve_count += 1
+        # 如果当前轨迹有任何犯规，将犯规发球次数增加1
+        if current_fouls:
+            self.foul_serve_count += 1
+
+        # 更新数据面板文本，包括发球和犯规统计
+        self.data_panel_text = (
+            f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
+            f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
+            f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
+            f"Angle with Vertical: {angle_with_vertical:.2f} degrees\n\n"
+            "Foul Statistics:\n"
+            f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
+            f"In Front of the End Line: {self.foul_stats['In Front of the End Line']}\n"
+            f"Backward Angle More Than 30 Degrees: {self.foul_stats['Backward Angle More Than 30 Degrees']}\n"
+            f"Tossed Upward Less Than 16 cm: {self.foul_stats['Tossed Upward Less Than 16 cm']}\n\n"
+            f"Total Serve Actions: {self.serve_count}\n"
+            f"Foul Serves: {self.foul_serve_count} / {self.serve_count}\n\n"
+            f"Current Fouls: {', '.join(current_fouls) if current_fouls else 'None'}"
+        )
 
 def main():
     pygame.init()
