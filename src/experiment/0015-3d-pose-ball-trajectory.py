@@ -20,6 +20,8 @@ from scipy.signal import savgol_filter
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 
+VIDEO_WIDTH = 640
+VIDEO_HEIGHT = 480
 
 class TableTennisGame:
     def __init__(self):
@@ -435,7 +437,7 @@ class TableTennisGame:
             y_offset += font.get_linesize() + 5
 
         # Draw data panel on the main screen
-        screen.blit(data_panel_surface, (640, 480))
+        screen.blit(data_panel_surface, (VIDEO_WIDTH, VIDEO_HEIGHT))
 
     def read_frame(self, camera):
         ret, frame = self.caps[camera].read()
@@ -523,8 +525,8 @@ def main():
     pygame.init()
     # Set screen to fit a 2x2 grid layout with 640x480 for each video, keeping aspect ratio
     video_width, video_height = 640, 480
-    screen_width = video_width * 4  # 1280
-    screen_height = video_height * 2  # 960
+    screen_width = VIDEO_WIDTH * 4  # 1280
+    screen_height = VIDEO_HEIGHT * 2  # 960
     screen = pygame.display.set_mode((screen_width, screen_height))
     pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
     game = TableTennisGame()
