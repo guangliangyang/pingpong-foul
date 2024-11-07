@@ -210,81 +210,6 @@ class TableTennisGame:
                 'g:'
             )
 
-    def find_key_points0(self,positions,fps = 60.0):
-
-        #positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
-        velocities = []
-        accelerations = []
-
-        # Ensure there are enough positions to compute velocities and accelerations
-        if len(positions) < 3:
-            # Not enough data to compute key points
-            return positions[0], positions[0], positions[-1]
-
-        # Step 1: Compute velocities
-        for i in range(1, len(positions)):
-            x0, y0, z0, f0 = positions[i - 1]
-            x1, y1, z1, f1 = positions[i]
-            dt = (f1 - f0) / fps if f1 != f0 else 1 / fps  # Avoid division by zero
-
-            vx = (x1 - x0) / dt
-            vy = (y1 - y0) / dt
-            vz = (z1 - z0) / dt
-            velocities.append((vx, vy, vz, f1))
-
-        # Step 2: Compute accelerations
-        for i in range(1, len(velocities)):
-            vx0, vy0, vz0, _ = velocities[i - 1]
-            vx1, vy1, vz1, _ = velocities[i]
-            dt = 1 / fps  # Time between frames is constant
-
-            ax = (vx1 - vx0) / dt
-            ay = (vy1 - vy0) / dt
-            az = (vz1 - vz0) / dt
-            accelerations.append((ax, ay, az))
-
-        # Step 3: Identify the Hit Point
-        # Find the maximum acceleration in Y and get the last occurrence
-        if accelerations:
-            max_ay = max(accelerations, key=lambda a: a[1])[1]
-            hit_indices = [i for i, a in enumerate(accelerations) if a[1] == max_ay]
-            hit_acc_index = max(hit_indices)
-            hit_point_index = hit_acc_index + 2  # Adjusting index to match positions
-            if hit_point_index < len(positions):
-                hit_point = positions[hit_point_index]
-            else:
-                hit_point = positions[-1]
-        else:
-            hit_point = positions[-1]
-
-        # Step 4: Identify the Highest Point
-        positions_before_hit = positions[:hit_point_index]
-        if positions_before_hit:
-            highest_z = max(positions_before_hit, key=lambda p: p[2])[2]
-            highest_indices = [i for i, p in enumerate(positions_before_hit) if p[2] == highest_z]
-            highest_index = highest_indices[0]
-            highest_point = positions[highest_index]
-        else:
-            highest_point = positions[0]
-
-        # Step 5: Identify the Throw Point
-        if highest_index >= 2:
-            accelerations_before_highest = accelerations[:highest_index - 1]
-            if accelerations_before_highest:
-                max_az = max(accelerations_before_highest, key=lambda a: a[2])[2]
-                throw_indices = [i for i, a in enumerate(accelerations_before_highest) if a[2] == max_az]
-                throw_acc_index = throw_indices[0]
-                throw_point_index = throw_acc_index + 1  # Adjust index for positions
-                throw_point = positions[throw_point_index]
-            else:
-                throw_point = positions[0]  # Default to first point if not enough data
-        else:
-            throw_point = positions[0]  # Default to first point if not enough data
-
-        return throw_point, highest_point, hit_point
-
-    import numpy as np
-    from scipy.signal import savgol_filter
 
     def find_key_points(self, positions, fps=60.0):
         # positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
@@ -322,8 +247,15 @@ class TableTennisGame:
         vy = np.gradient(y_smooth, time)
         vz = np.gradient(z_smooth, time)
 
-        # Step 3: Identify the Highest Point (maximum Z value)
-        highest_point_index = np.argmax(z_smooth)
+        # Step 3: Identify the Highest Point (maximum Z value with y < 0.2)
+        sorted_indices = np.argsort(z_smooth)[::-1]  # Indices sorted by z value in descending order
+        highest_point_index = None
+        for index in sorted_indices:
+            if y_smooth[index] < 0.2:  # Check if y < 0.2
+                highest_point_index = index
+                break
+        if highest_point_index is None:
+            highest_point_index = np.argmax(z_smooth)  # Fall back to max z without y < 0.2 condition
         highest_point = positions[highest_point_index]
 
         # Step 4: Identify the Throw Point
@@ -335,25 +267,22 @@ class TableTennisGame:
             az = np.gradient(vz_before_highest, time_before_highest)
             # Find the index where az is maximum
             throw_point_index = np.argmax(az)
-            throw_point = positions[throw_point_index]
+            throw_point = positions[throw_point_index + 1]
         else:
             throw_point = positions[0]
 
         # Step 5: Identify the Hit Point
-        # After the Highest Point, find where the speed increases abruptly
-        if highest_point_index < len(vx) - 2:
-            vx_after_highest = vx[highest_point_index:]
+        # After the Highest Point, find where vy (y-axis velocity) increases abruptly
+        if highest_point_index < len(vy) - 2:
             vy_after_highest = vy[highest_point_index:]
-            vz_after_highest = vz[highest_point_index:]
             time_after_highest = time[highest_point_index:]
 
-            # Compute speed magnitude
-            speed_after_highest = np.sqrt(vx_after_highest ** 2 + vy_after_highest ** 2 + vz_after_highest ** 2)
-            # Compute speed difference
-            speed_diff = np.diff(speed_after_highest)
-            # Find the index where speed increases abruptly (maximum positive difference)
-            hit_point_relative_index = np.argmax(speed_diff) + 1  # +1 to correct the index after diff
+            # Compute the difference in vy to find abrupt changes
+            vy_diff = np.diff(vy_after_highest)
+            # Find the index where vy increases abruptly (maximum positive difference)
+            hit_point_relative_index = np.argmax(vy_diff) + 1  # +1 to correct the index after diff
             hit_point_index = highest_point_index + hit_point_relative_index
+
             if hit_point_index < len(positions):
                 hit_point = positions[hit_point_index]
             else:
@@ -458,7 +387,7 @@ def main():
     pygame.init()
     # Set screen to fit a 2x2 grid layout with 640x480 for each video, keeping aspect ratio
     video_width, video_height = 640, 480
-    screen_width = video_width * 2  # 1280
+    screen_width = video_width * 4  # 1280
     screen_height = video_height * 2  # 960
     screen = pygame.display.set_mode((screen_width, screen_height))
     pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
@@ -527,29 +456,30 @@ def main():
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
             frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (video_width, video_height)).swapaxes(0, 1))
             frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (video_width, video_height)).swapaxes(0, 1))
-            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width, video_height))
+
+            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width*2, video_height*2))
 
             # Define the layout positions
             screen.blit(frame1_surface, (0, 0))  # Top-left: Camera 1
             screen.blit(frame2_surface, (video_width, 0))  # Top-right: Camera 2
-            screen.blit(plot_surface_resized, (0, video_height))  # Bottom-left: 3D plot
+            screen.blit(plot_surface_resized, (video_width*2, 0))  # Bottom-left: 3D plot
 
             # Placeholder for future data panel (Bottom-right)
-            data_panel = pygame.Surface((video_width, video_height))
+            data_panel = pygame.Surface((video_width*2, video_height))
             data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-            screen.blit(data_panel, (video_width, video_height))
+            screen.blit(data_panel, (0, video_height))
 
         else:
             # Rotate the 3D plot while paused
-            rotation_angle = (rotation_angle + 2) % 360
+            rotation_angle = (rotation_angle + 1) % 360
             plot_surface = game.update_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
-            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width, video_height))
-            screen.blit(plot_surface_resized, (0, video_height))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width*2, video_height*2))
+            screen.blit(plot_surface_resized, (video_width*2, 0))
 
             # Draw static elements
             screen.blit(frame1_surface, (0, 0))
             screen.blit(frame2_surface, (video_width, 0))
-            screen.blit(data_panel, (video_width, video_height))
+            screen.blit(data_panel, (0, video_height))
         pygame.display.flip()
         pygame.time.delay(30)
 
