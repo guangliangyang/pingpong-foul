@@ -49,14 +49,17 @@ class TableTennisGame:
         }
 
         self.foul_stats = {
-            'Tossed from Below Table Surface': 0,
             'In Front of the End Line': 0,
+            'Beyond the sideline extension': 0,
+
+            'Tossed from Below Table Surface': 0,
             'Backward Angle More Than 30 Degrees': 0,
             'Tossed Upward Less Than 16 cm': 0
         }
         self.serve_count = 0  # 记录球发球动作的次数
         self.foul_serve_count = 0
         self.last_frame_index = None  # 记录上一发球动作的最后帧索引
+        self.foul_checked = False    # 标志位，表示当前轨迹是否已进行犯规统计
 
         # Store 3D ball trajectory and separate 2D trajectories for each camera
         self.ball_trajectory_3d = []
@@ -403,6 +406,8 @@ class TableTennisGame:
             self.ax.scatter(*highest_point[:3], color='red', s=2, label='Highest Point')
             self.ax.scatter(*hit_point[:3], color='green', s=2, label='Hit Point')
 
+            self.check_and_perform_foul_statistics()
+
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
 
@@ -439,15 +444,23 @@ class TableTennisGame:
             ret, frame = self.caps[camera].read()
         return frame
 
+    def check_and_perform_foul_statistics(self):
+        """检查是否需要进行犯规统计，条件是 last_point[1] > 0.25 且未统计过"""
+        if len(self.ball_trajectory_3d) > 1 and not self.foul_checked:
+            last_point = self.ball_trajectory_3d[-1]
+            if last_point[1] > 0.25:
+                self.perform_foul_check_and_statistics()
+                self.foul_checked = True  # 设置标志，避免重复统计
+
     def reset_trajectories_if_needed(self, last_point, current_point):
         if last_point[1] > 0.25 and current_point[1] < 0.15:
-            self.perform_foul_check_and_statistics()
             self.reset_trajectories()
 
     def reset_trajectories(self):
         self.ball_trajectory_3d.clear()
         self.trajectory_2d_camera1.clear()
         self.trajectory_2d_camera2.clear()
+        self.foul_checked = False
 
     def perform_foul_check_and_statistics(self):
         """在当前3D轨迹结束时，进行一次犯规检查和统计更新"""
@@ -467,6 +480,14 @@ class TableTennisGame:
         if throw_point[1] > 0 or highest_point[1] > 0 or hit_point[1] > 0:
             self.foul_stats['In Front of the End Line'] += 1
             current_fouls.append('In Front of the End Line')
+
+
+        if (throw_point[0] < 0 or highest_point[0] < 0 or hit_point[0] < 0
+                or throw_point[0] > 1.52 or highest_point[0] > 1.52 or hit_point[0] > 1.52):
+            self.foul_stats['Beyond the sideline extension'] += 1
+            current_fouls.append('Beyond the sideline extension')
+
+
         angle_with_vertical = self.calculate_angle_with_vertical(throw_point, highest_point)
         if angle_with_vertical > 30:
             self.foul_stats['Backward Angle More Than 30 Degrees'] += 1
@@ -488,8 +509,9 @@ class TableTennisGame:
             f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
             f"Angle with Vertical: {angle_with_vertical:.2f} degrees\n\n"
             "Foul Statistics:\n"
-            f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
             f"In Front of the End Line: {self.foul_stats['In Front of the End Line']}\n"
+            f"Beyond the sideline extension: {self.foul_stats['Beyond the sideline extension']}\n"
+            f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
             f"Backward Angle More Than 30 Degrees: {self.foul_stats['Backward Angle More Than 30 Degrees']}\n"
             f"Tossed Upward Less Than 16 cm: {self.foul_stats['Tossed Upward Less Than 16 cm']}\n\n"
             f"Total Serve Actions: {self.serve_count}\n"
