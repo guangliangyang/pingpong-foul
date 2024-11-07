@@ -20,9 +20,11 @@ from scipy.signal import savgol_filter
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 
-VIDEO_WIDTH = 640
-VIDEO_HEIGHT = 480
+VIDEO_WIDTH = 640.0
+VIDEO_HEIGHT = 480.0
 ACTION_3D_Y_SPLIT = 0.4
+
+SYS_TITLE = "Table Tennis Foul Detection System"
 
 class TableTennisGame:
     def __init__(self):
@@ -113,6 +115,7 @@ class TableTennisGame:
             skeleton_3d.append(self.calculate_3d_coordinates(point1, point2))
         return skeleton_3d
 
+
     def draw_skeleton_3d(self, skeleton_3d):
         # Draw lines connecting the skeleton parts based on their MediaPipe landmark connections
         connections = [
@@ -167,20 +170,6 @@ class TableTennisGame:
         if results.pose_landmarks:
             return results.pose_landmarks.landmark
         return None
-    #
-    # def filter_noise_by_acceleration(self,trajectory_2d, accel_threshold=5):
-    #     if len(trajectory_2d) < 3:
-    #         return trajectory_2d  # 如果点数不足，直接返回
-    #
-    #     filtered_trajectory = [trajectory_2d[0]]  # 保留第一个点
-    #     for i in range(1, len(trajectory_2d) - 1):
-    #         v1 = np.array(trajectory_2d[i]) - np.array(trajectory_2d[i - 1])
-    #         v2 = np.array(trajectory_2d[i + 1]) - np.array(trajectory_2d[i])
-    #         accel = np.linalg.norm(v2 - v1)
-    #         if accel < accel_threshold:  # 如果加速度在阈值内，保留该点
-    #             filtered_trajectory.append(trajectory_2d[i])
-    #
-    #     return filtered_trajectory
 
     def draw_2d_trajectory(self, frame, trajectory_2d, max_distance=20):
         # Find the frame index where y > ACTION_3D_Y_SPLIT
@@ -441,9 +430,13 @@ class TableTennisGame:
         logging.debug("3D plot surface updated.")
         return plot_surface
 
-    def draw_data_panel(self, screen, font, color=(255, 255, 255)):
-        data_panel_surface = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
-        data_panel_surface.fill((50, 50, 50))  # Dark gray background
+
+    def create_label_surface(self, text, font, bg, fg):
+        pygame_font = pygame.font.SysFont(font[0], font[1])
+        label_surface = pygame_font.render(text, True, pygame.Color(fg), pygame.Color(bg))
+        return label_surface
+
+    def draw_data_panel(self,data_panel_surface, screen, font,x_loc,y_loc, color=(255, 255, 255)):
 
         # Render and display text
         lines = self.data_panel_text.split("\n")
@@ -458,7 +451,7 @@ class TableTennisGame:
             y_offset += font.get_linesize() + 5
 
         # Draw data panel on the main screen
-        screen.blit(data_panel_surface, (VIDEO_WIDTH, VIDEO_HEIGHT))
+        screen.blit(data_panel_surface, (x_loc, y_loc))
 
     def read_frame(self, camera):
         ret, frame = self.caps[camera].read()
@@ -545,8 +538,8 @@ class TableTennisGame:
 def main():
     pygame.init()
 
-    screen_width = VIDEO_WIDTH * 4  # 1280
-    screen_height = VIDEO_HEIGHT * 2  # 960
+    screen_width, screen_height = 1530, 930
+
     screen = pygame.display.set_mode((screen_width, screen_height))
     pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
     game = TableTennisGame()
@@ -612,40 +605,62 @@ def main():
 
             frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
-            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (VIDEO_WIDTH, VIDEO_HEIGHT)).swapaxes(0, 1))
-            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (VIDEO_WIDTH, VIDEO_HEIGHT)).swapaxes(0, 1))
+            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (int(VIDEO_WIDTH/2), int(VIDEO_HEIGHT/2))).swapaxes(0, 1))
+            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (int(VIDEO_WIDTH/2), int(VIDEO_HEIGHT/2))).swapaxes(0, 1))
 
-            plot_surface_resized = pygame.transform.scale(plot_surface, (VIDEO_WIDTH*2, VIDEO_HEIGHT*2))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
 
             # Define the layout positions
-            screen.blit(frame1_surface, (0, 0))  # Top-left: Camera 1
-            screen.blit(frame2_surface, (VIDEO_WIDTH, 0))  # Top-right: Camera 2
-            screen.blit(plot_surface_resized, (VIDEO_WIDTH*2, 0))  # Bottom-left: 3D plot
+            screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
+            screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH/2, 0))  # Top-right: Camera 2
+            screen.blit(plot_surface_resized, (0, 0))  # Bottom-left: 3D plot
 
             # Placeholder for future data panel (Bottom-right)
-            data_panel = pygame.Surface((VIDEO_WIDTH*2, VIDEO_HEIGHT))
+            data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
             data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-            screen.blit(data_panel, (0, VIDEO_HEIGHT))
-            game.draw_data_panel(screen, font)
+            #screen.blit(data_panel,(screen_width - VIDEO_WIDTH+50,VIDEO_HEIGHT/2 ))
+
+
+            #screen.blit(data_panel_surface, (x_loc, y_loc))
+            game.draw_data_panel(data_panel,screen, font,screen_width - VIDEO_WIDTH,VIDEO_HEIGHT/2)
+
+            draw_title(game, screen, screen_width)
+
 
         else:
             # Rotate the 3D plot while paused
             rotation_angle = (rotation_angle + 1) % 360
             plot_surface = game.update_3D_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
-            plot_surface_resized = pygame.transform.scale(plot_surface, (VIDEO_WIDTH*2, VIDEO_HEIGHT*2))
-            screen.blit(plot_surface_resized, (VIDEO_WIDTH*2, 0))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
+            screen.blit(plot_surface_resized, (0, 0))
 
             # Draw static elements
-            screen.blit(frame1_surface, (0, 0))
-            screen.blit(frame2_surface, (VIDEO_WIDTH, 0))
-            screen.blit(data_panel, (0, VIDEO_HEIGHT))
-            game.draw_data_panel(screen, font)
+            screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
+            screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH/2, 0))  # Top-right: Camera 2
+            game.draw_data_panel(data_panel,screen, font,screen_width - VIDEO_WIDTH,VIDEO_HEIGHT/2)
+
+            draw_title(game, screen, screen_width)
 
         pygame.display.flip()
-        pygame.time.delay(30)
 
     pygame.quit()
     sys.exit()
+
+
+def draw_title(game, screen, screen_width):
+    # title
+    title_text = f"{SYS_TITLE}"
+    title_surface = game.create_label_surface(title_text, ("Arial", 28), "blue", "white")
+    region1_x = 0
+    region1_y = 0
+    region1_width = screen_width - VIDEO_WIDTH
+    region1_height = 60
+    title_surface_width = title_surface.get_width()
+    title_surface_height = title_surface.get_height()
+    centered_x = region1_x + (region1_width - title_surface_width) // 2
+    centered_y = region1_y + (region1_height - title_surface_height) // 2
+    screen.fill((0, 0, 255), rect=[region1_x, region1_y, region1_width, region1_height])
+    screen.blit(title_surface, (centered_x, centered_y))
 
 
 if __name__ == "__main__":
