@@ -104,11 +104,11 @@ class TableTennisGame:
         self.camera2_3d_coordinates = key_points_data["3d_coordinates"][8:]  # Next 8 for camera2
         logging.debug("2D key points and corresponding 3D coordinates loaded successfully.")
 
-    def calculate_3d_skeleton(self, landmarks1, landmarks2, video_width, video_height):
+    def calculate_3d_skeleton(self, landmarks1, landmarks2, VIDEO_WIDTH, VIDEO_HEIGHT):
         skeleton_3d = []
         for lm1, lm2 in zip(landmarks1, landmarks2):
-            point1 = np.array([[lm1.x * video_width], [lm1.y * video_height]], dtype=np.float32)
-            point2 = np.array([[lm2.x * video_width], [lm2.y * video_height]], dtype=np.float32)
+            point1 = np.array([[lm1.x * VIDEO_WIDTH], [lm1.y * VIDEO_HEIGHT]], dtype=np.float32)
+            point2 = np.array([[lm2.x * VIDEO_WIDTH], [lm2.y * VIDEO_HEIGHT]], dtype=np.float32)
             skeleton_3d.append(self.calculate_3d_coordinates(point1, point2))
         return skeleton_3d
 
@@ -421,7 +421,7 @@ class TableTennisGame:
         return plot_surface
 
     def draw_data_panel(self, screen, font, color=(255, 255, 255)):
-        data_panel_surface = pygame.Surface((640, 480))
+        data_panel_surface = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
         data_panel_surface.fill((50, 50, 50))  # Dark gray background
 
         # Render and display text
@@ -523,8 +523,7 @@ class TableTennisGame:
 
 def main():
     pygame.init()
-    # Set screen to fit a 2x2 grid layout with 640x480 for each video, keeping aspect ratio
-    video_width, video_height = 640, 480
+
     screen_width = VIDEO_WIDTH * 4  # 1280
     screen_height = VIDEO_HEIGHT * 2  # 960
     screen = pygame.display.set_mode((screen_width, screen_height))
@@ -545,10 +544,10 @@ def main():
         if not paused:
             frame1 = game.read_frame("camera1")
             frame2 = game.read_frame("camera2")
-            game.video_width, game.video_height = frame1.shape[1], frame1.shape[0]
+            game.VIDEO_WIDTH, game.VIDEO_HEIGHT = frame1.shape[1], frame1.shape[0]
             landmarks1 = game.process_frame_for_skeleton(frame1, game.pose_camera1, "camera1")
             landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
-            skeleton_3d = game.calculate_3d_skeleton(landmarks1, landmarks2, game.video_width, game.video_height) if landmarks1 and landmarks2 else None
+            skeleton_3d = game.calculate_3d_skeleton(landmarks1, landmarks2, game.VIDEO_WIDTH, game.VIDEO_HEIGHT) if landmarks1 and landmarks2 else None
             last_skeleton_3d = skeleton_3d  # Update the last known skeleton data
             plot_surface = game.update_plot_surface(skeleton_3d)
 
@@ -592,33 +591,33 @@ def main():
 
             frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
             frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
-            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (video_width, video_height)).swapaxes(0, 1))
-            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (video_width, video_height)).swapaxes(0, 1))
+            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (VIDEO_WIDTH, VIDEO_HEIGHT)).swapaxes(0, 1))
+            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (VIDEO_WIDTH, VIDEO_HEIGHT)).swapaxes(0, 1))
 
-            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width*2, video_height*2))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (VIDEO_WIDTH*2, VIDEO_HEIGHT*2))
 
             # Define the layout positions
             screen.blit(frame1_surface, (0, 0))  # Top-left: Camera 1
-            screen.blit(frame2_surface, (video_width, 0))  # Top-right: Camera 2
-            screen.blit(plot_surface_resized, (video_width*2, 0))  # Bottom-left: 3D plot
+            screen.blit(frame2_surface, (VIDEO_WIDTH, 0))  # Top-right: Camera 2
+            screen.blit(plot_surface_resized, (VIDEO_WIDTH*2, 0))  # Bottom-left: 3D plot
 
             # Placeholder for future data panel (Bottom-right)
-            data_panel = pygame.Surface((video_width*2, video_height))
+            data_panel = pygame.Surface((VIDEO_WIDTH*2, VIDEO_HEIGHT))
             data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-            screen.blit(data_panel, (0, video_height))
+            screen.blit(data_panel, (0, VIDEO_HEIGHT))
             game.draw_data_panel(screen, font)
 
         else:
             # Rotate the 3D plot while paused
             rotation_angle = (rotation_angle + 1) % 360
             plot_surface = game.update_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
-            plot_surface_resized = pygame.transform.scale(plot_surface, (video_width*2, video_height*2))
-            screen.blit(plot_surface_resized, (video_width*2, 0))
+            plot_surface_resized = pygame.transform.scale(plot_surface, (VIDEO_WIDTH*2, VIDEO_HEIGHT*2))
+            screen.blit(plot_surface_resized, (VIDEO_WIDTH*2, 0))
 
             # Draw static elements
             screen.blit(frame1_surface, (0, 0))
-            screen.blit(frame2_surface, (video_width, 0))
-            screen.blit(data_panel, (0, video_height))
+            screen.blit(frame2_surface, (VIDEO_WIDTH, 0))
+            screen.blit(data_panel, (0, VIDEO_HEIGHT))
             game.draw_data_panel(screen, font)
 
         pygame.display.flip()
