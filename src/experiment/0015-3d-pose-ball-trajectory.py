@@ -445,20 +445,33 @@ class TableTennisGame:
         # Split `data_panel_text` by newlines for rendering line by line
         lines = self.data_panel_text.split("\n")
 
+        # Define a larger font for the first line
+        larger_font = pygame.font.Font(None, 40)  # Adjust size as needed for visibility
+
         # Define layout variables
         row_height = font.get_linesize() + 10
         column_width = data_panel_surface.get_width() // 2
 
-        # Draw header
+        # Draw header with larger font
         summary_text = lines[0]  # The first line is the summary
-        summary_surface = font.render(summary_text, True, color)
+        summary_surface = larger_font.render(summary_text, True, color)
         data_panel_surface.blit(summary_surface, (10, 10))
 
-        # Render each line under the appropriate column
+        # Find the "Current Fouls" section and extract the fouls listed under it
+        if "Current Fouls:" in lines:
+            current_fouls_start = lines.index("Current Fouls:") + 1
+            current_fouls = [line.strip(" -") for line in lines[current_fouls_start:] if line.startswith(" -")]
+        else:
+            current_fouls = []
+
+        # Render each line in the "Foul Statistics" section
         for i, line in enumerate(lines[2:8]):  # Lines 2-7 are Foul Statistics
-            foul_text_surface = font.render(line, True, color)
+            # Highlight in yellow if the line corresponds to a foul in current_fouls
+            foul_color = (255, 255, 0) if any(foul in line for foul in current_fouls) else color
+            foul_text_surface = font.render(line, True, foul_color)
             data_panel_surface.blit(foul_text_surface, (10, i * row_height + 70))  # Left column
 
+        # Render each line in the "Current Action Statistics" section
         for i, line in enumerate(lines[9:15]):  # Lines 9-14 are Current Action Statistics
             action_text_surface = font.render(line, True, color)
             data_panel_surface.blit(action_text_surface, (column_width + 10, i * row_height + 70))  # Right column
@@ -469,7 +482,7 @@ class TableTennisGame:
                              (data_panel_surface.get_width(), row * row_height + 60), 1)
 
         pygame.draw.line(data_panel_surface, (100, 100, 100), (column_width, 60),
-                         (column_width, row_height*8), 1)
+                         (column_width, row_height * 8), 1)
 
         # Display the data panel on the screen
         screen.blit(data_panel_surface, (x_loc, y_loc))
@@ -482,7 +495,6 @@ class TableTennisGame:
         return frame
 
     def check_and_perform_foul_statistics(self):
-        """检查是否需要进行犯规统计，条件是 last_point[1] > ACTION_3D_Y_SPLIT 且未统计过"""
         if len(self.ball_trajectory_3d) > 1 and not self.foul_checked:
             last_point = self.ball_trajectory_3d[-1]
             if last_point[1] > ACTION_3D_Y_SPLIT:
@@ -508,7 +520,7 @@ class TableTennisGame:
         throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
 
         # Calculate Tossed Upward Distance
-        tossed_upward_distance = highest_point[2] - throw_point[2]
+        tossed_upward_distance = (highest_point[2] - throw_point[2])*100
 
         # Current fouls for this trajectory
         current_fouls = []
@@ -530,7 +542,7 @@ class TableTennisGame:
         if angle_with_vertical > 30:
             self.foul_stats['Backward Angle More Than 30°'] += 1
             current_fouls.append('Backward Angle More Than 30°')
-        if tossed_upward_distance < 0.16:
+        if tossed_upward_distance < 16:
             self.foul_stats['Tossed Upward Less Than 16 cm'] += 1
             current_fouls.append('Tossed Upward Less Than 16 cm')
 
@@ -555,19 +567,19 @@ class TableTennisGame:
         self.data_panel_text = (
             f"Foul Serves/Total Serve Actions:  {self.foul_serve_count} / {self.serve_count}\n\n"
 
-            "Foul Statistics:\n"
+            "Foul Statistics\n"
             f"In Front of the End Line: {self.foul_stats['In Front of the End Line']}\n"
             f"Beyond the sideline extension: {self.foul_stats['Beyond the sideline extension']}\n"
             f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
             f"Backward Angle More Than 30°: {self.foul_stats['Backward Angle More Than 30°']}\n"
             f"Tossed Upward Less Than 16 cm: {self.foul_stats['Tossed Upward Less Than 16 cm']}\n\n"
 
-            "Current Action Statistics:\n"
+            "Current Action Statistics\n"
             f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
             f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
             f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
-            f"Tossed Upward Distance: {tossed_upward_distance:.2f} m\n"
-            f"Angle with Vertical: {angle_with_vertical:.2f} °\n\n"
+            f"Angle with Vertical: {angle_with_vertical:.2f} °\n"
+            f"Tossed Upward Distance: {tossed_upward_distance:.2f} cm\n\n"
 
             "Current Fouls:\n" +
             "\n".join(f" - {foul}" for foul in current_fouls) if current_fouls else "None"
@@ -797,7 +809,7 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
 
     if game.action_segments:
         latest_segment = game.action_segments[-1]
-        latest_segment_index = len(game.action_segments) - 1
+        latest_segment_index = len(game.action_segments)
         throw_frame = latest_segment['throw_frame']
         highest_frame = latest_segment['highest_frame']
         hit_frame = latest_segment['hit_frame']
