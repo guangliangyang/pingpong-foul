@@ -81,6 +81,10 @@ class TableTennisGame:
 
         # Data panel text
         self.data_panel_text = ""
+
+        self.frame_cache = []
+        self.frame_cache_limit = 200
+
     def load_calibration_data(self):
         with open('0012-calibration_in_ex_trinsic.json', 'r') as f:
             calibration_data = json.load(f)
@@ -370,18 +374,16 @@ class TableTennisGame:
             (0, 0, 0)  # Close the loop to complete the rectangle
         ]
         x_table, y_table, z_table = zip(*table_corners)
-        self.ax.plot(x_table, y_table, z_table, color="red", linewidth=2, label="Table")
+        self.ax.plot(x_table, y_table, z_table, color="red", linewidth=2)
 
         # Plot skeleton structure if available
         if skeleton_3d:
             self.draw_skeleton_3d(skeleton_3d)
-            self.ax.plot([], [], [], color='green', label='Skeleton')  # Add to legend
 
         # Only draw the 3D trajectory between the throw point and hit point
-        if len(self.ball_trajectory_3d) > 3:  # Check for sufficient points
+        if len(self.ball_trajectory_3d) > 3:
             throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
 
-            # Find the indices of throw point and hit point in the trajectory
             try:
                 throw_index = self.ball_trajectory_3d.index(tuple(throw_point))
                 hit_index = self.ball_trajectory_3d.index(tuple(hit_point))
@@ -389,49 +391,43 @@ class TableTennisGame:
                 logging.warning("Throw or hit point not found in trajectory data.")
                 throw_index, hit_index = 0, len(self.ball_trajectory_3d) - 1
 
-            # Extract the segment of the trajectory between throw point and hit point
             trajectory_segment = self.ball_trajectory_3d[throw_index:hit_index + 1]
 
-            # Smooth 3D trajectory plotting using interpolation
             if len(trajectory_segment) > 3:
                 xs, ys, zs, frame_index = zip(*trajectory_segment)
-
-                # Ensure unique points to prevent interpolation errors
                 if len(set(zip(xs, ys, zs))) > 3:
                     try:
-                        # Interpolate to create a smooth curve
                         tck, _ = splprep([xs, ys, zs], s=0)
                         smooth_points = splev(np.linspace(0, 1, 100), tck)
-
-                        # Plot smooth trajectory
-                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2,
-                                     label='Ball Trajectory')
-
-                        # Plot points with a trailing effect
-                        for i in range(len(xs)):
-                            alpha = (i + 1) / len(xs)
-                            self.ax.scatter(xs[i], ys[i], zs[i], color=(1 - alpha, 0, alpha), s=2, alpha=alpha)
+                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
                     except ValueError as e:
                         logging.warning(f"Spline interpolation failed: {e}")
-                        # Plot trajectory without interpolation if there's an error
-                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--", label='Ball Trajectory')
+                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
 
             # Plot each key point with a different color and add labels
-            self.ax.scatter(*throw_point[:3], color='yellow', s=50, label='Throw Point')
-            self.ax.scatter(*highest_point[:3], color='red', s=50, label='Highest Point')
-            self.ax.scatter(*hit_point[:3], color='green', s=50, label='Hit Point')
+            self.ax.scatter(*throw_point[:3], color='yellow', s=2)
+            self.ax.scatter(*highest_point[:3], color='red', s=2)
+            self.ax.scatter(*hit_point[:3], color='green', s=2)
 
             self.check_and_perform_foul_statistics()
 
-        # Draw the serve area cube (dashed green cube)
         self.draw_serve_area_3d_cube()
-        self.ax.plot([], [], [], 'g--', label='Serve Area')  # Add to legend
 
         # Set a fixed viewing angle for better depth perception
         self.ax.view_init(elev=20, azim=rotation_angle)
 
-        # Add legend to the plot
-        self.ax.legend(loc='upper left')
+        # Manually create fixed legend entries
+        from matplotlib.lines import Line2D
+
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Throw Point', markerfacecolor='yellow', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label='Highest Point', markerfacecolor='red', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label='Hit Point', markerfacecolor='green', markersize=8),
+            Line2D([0], [0], linestyle='--', color='green', label='Serve Area')
+        ]
+
+        # Add the fixed-position legend
+        self.ax.legend(handles=legend_elements, loc='upper left')
 
         # Convert the Matplotlib plot to a Pygame surface
         canvas = FigureCanvas(self.fig)
@@ -542,20 +538,36 @@ class TableTennisGame:
 
         # 更新数据面板文本，包括发球和犯规统计
         self.data_panel_text = (
-            f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
-            f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
-            f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
-            f"Angle with Vertical: {angle_with_vertical:.2f} degrees\n\n"
+            f"Foul Serves/Total Serve Actions:  {self.foul_serve_count} / {self.serve_count}\n\n"
+            
             "Foul Statistics:\n"
             f"In Front of the End Line: {self.foul_stats['In Front of the End Line']}\n"
             f"Beyond the sideline extension: {self.foul_stats['Beyond the sideline extension']}\n"
             f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
             f"Backward Angle More Than 30 Degrees: {self.foul_stats['Backward Angle More Than 30 Degrees']}\n"
             f"Tossed Upward Less Than 16 cm: {self.foul_stats['Tossed Upward Less Than 16 cm']}\n\n"
-            f"Total Serve Actions: {self.serve_count}\n"
-            f"Foul Serves: {self.foul_serve_count} / {self.serve_count}\n\n"
-            f"Current Fouls: {', '.join(current_fouls) if current_fouls else 'None'}"
+                                                                                    
+            "Current Action Statistics:\n"
+            f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
+            f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
+            f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
+            f"Angle with Vertical: {angle_with_vertical:.2f} °\n\n"
+
+            "Current Fouls:\n" +
+            "\n".join(f" - {foul}" for foul in current_fouls) if current_fouls else "None"
         )
+
+    def update_frame_cache(self, frame, frame_index):
+        if len(self.frame_cache) >= self.frame_cache_limit:
+            self.frame_cache.pop(0)
+        self.frame_cache.append((frame_index, frame))
+
+    def get_cached_frame_image(self, frame_index, frame_cache):
+        for cached_index, frame in frame_cache:
+            if cached_index == frame_index:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return pygame.surfarray.make_surface(cv2.resize(frame_rgb, (213, 160)).swapaxes(0, 1))
+        return None
 
 def main():
     pygame.init()
@@ -581,6 +593,7 @@ def main():
             frame1 = game.read_frame("camera1")
             frame2 = game.read_frame("camera2")
             frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
+            game.update_frame_cache(frame1, frame_index)
             game.VIDEO_WIDTH, game.VIDEO_HEIGHT = frame1.shape[1], frame1.shape[0]
             landmarks1 = game.process_frame_for_skeleton(frame1, game.pose_camera1, "camera1")
             landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
@@ -651,7 +664,7 @@ def main():
         bar_height, bar_y ,bar_x= draw_action_segmentation(frame_index, game, screen, screen_width)
         data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
         data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-        data_panel_y = bar_y + bar_height + 50
+        data_panel_y = bar_y + bar_height + 210
         game.draw_data_panel(data_panel, screen, font, screen_width - VIDEO_WIDTH, data_panel_y)
         draw_title(game, screen, screen_width)
 
@@ -690,6 +703,8 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     # Avoid division by zero
     if max_frame_index == min_frame_index:
         max_frame_index += 1
+
+    print("game.action_segments=",game.action_segments)
     # For each action segment, draw its representation on the bar
     for segment in game.action_segments:
         start_frame = segment['start_frame']
@@ -763,6 +778,34 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     pygame.draw.line(screen, (255, 165, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5), 2)
     legend_text_hit = legend_font.render("Hit Point", True, (255, 255, 255))
     screen.blit(legend_text_hit, (legend_x + 525, legend_y - 5))
+
+    if game.action_segments:
+        latest_segment = game.action_segments[-1]
+        latest_segment_index = len(game.action_segments) - 1
+        throw_frame = latest_segment['throw_frame']
+        highest_frame = latest_segment['highest_frame']
+        hit_frame = latest_segment['hit_frame']
+
+        # 从缓存中获取帧图像
+        throw_img = game.get_cached_frame_image(throw_frame, game.frame_cache)
+        highest_img = game.get_cached_frame_image(highest_frame, game.frame_cache)
+        hit_img = game.get_cached_frame_image(hit_frame, game.frame_cache)
+
+        image_y = legend_y + 30
+        label_font = pygame.font.SysFont("Arial", 14)
+
+        if throw_img:
+            screen.blit(throw_img, (legend_x, image_y))
+            throw_text = label_font.render(f"{latest_segment_index} Throw", True, (255, 255, 255))
+            screen.blit(throw_text, (legend_x, image_y))
+        if highest_img:
+            screen.blit(highest_img, (legend_x + 220, image_y))
+            highest_text = label_font.render(f"{latest_segment_index} Highest", True, (255, 255, 255))
+            screen.blit(highest_text, (legend_x + 220, image_y))
+        if hit_img:
+            screen.blit(hit_img, (legend_x + 440, image_y))
+            hit_text = label_font.render(f"{latest_segment_index} Hit", True, (255, 255, 255))
+            screen.blit(hit_text, (legend_x + 440, image_y))
 
     return bar_height, bar_y,bar_x
 
