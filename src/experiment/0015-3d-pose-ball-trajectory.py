@@ -26,6 +26,22 @@ ACTION_3D_Y_SPLIT = 0.4
 
 SYS_TITLE = "Table Tennis Foul Detection System"
 
+
+from dataclasses import dataclass, field
+
+@dataclass
+class FoulCheckResult:
+    throw_point: tuple
+    highest_point: tuple
+    hit_point: tuple
+    angle_with_vertical: float
+    tossed_upward_distance: float
+    current_fouls: list = field(default_factory=list)
+    foul_serve_count: int = 0
+    serve_count: int = 0
+    foul_stats: dict = field(default_factory=dict)
+
+
 class TableTennisGame:
     def __init__(self):
         # Initialize YOLO model for ball tracking
@@ -442,47 +458,76 @@ class TableTennisGame:
         return label_surface
 
     def draw_data_panel(self, data_panel_surface, screen, font, x_loc, y_loc, color=(255, 255, 255)):
-        # Split `data_panel_text` by newlines for rendering line by line
-        lines = self.data_panel_text.split("\n")
+        if not hasattr(self, 'foul_check_result'):
+            return  # Exit if no foul check result is available
 
-        # Define a larger font for the first line
-        larger_font = pygame.font.Font(None, 40)  # Adjust size as needed for visibility
-
-        # Define layout variables
+        result = self.foul_check_result
         row_height = font.get_linesize() + 10
         column_width = data_panel_surface.get_width() // 2
 
-        # Draw header with larger font
-        summary_text = lines[0]  # The first line is the summary
-        summary_surface = larger_font.render(summary_text, True, color)
+        # Header text for summary
+        summary_text = f"Foul Serves/Total Serve Actions: {result.foul_serve_count} / {result.serve_count}"
+        summary_surface = pygame.font.Font(None, 40).render(summary_text, True, color)
         data_panel_surface.blit(summary_surface, (10, 10))
 
-        # Find the "Current Fouls" section and extract the fouls listed under it
-        if "Current Fouls:" in lines:
-            current_fouls_start = lines.index("Current Fouls:") + 1
-            current_fouls = [line.strip(" -") for line in lines[current_fouls_start:] if line.startswith(" -")]
-        else:
-            current_fouls = []
+        # Column Header: "Foul Statistics"
+        foul_header_surface = pygame.font.Font(None, 32).render("Foul Statistics", True, color)
+        data_panel_surface.blit(foul_header_surface, (10, 65))
 
-        # Render each line in the "Foul Statistics" section
-        for i, line in enumerate(lines[2:8]):  # Lines 2-7 are Foul Statistics
-            # Highlight in yellow if the line corresponds to a foul in current_fouls
-            foul_color = (255, 255, 0) if any(foul in line for foul in current_fouls) else color
-            foul_text_surface = font.render(line, True, foul_color)
-            data_panel_surface.blit(foul_text_surface, (10, i * row_height + 70))  # Left column
+        # Foul Statistics section
+        foul_start_y = 95
+        for i, (foul, count) in enumerate(result.foul_stats.items()):
+            #foul_color = (255, 255, 0) if foul in result.current_fouls else color
+            foul_color = (255, 255, 255)
+            foul_text_surface = font.render(f"{foul}: {count}", True, foul_color)
+            data_panel_surface.blit(foul_text_surface, (10, foul_start_y + i * row_height))
 
-        # Render each line in the "Current Action Statistics" section
-        for i, line in enumerate(lines[9:15]):  # Lines 9-14 are Current Action Statistics
-            action_text_surface = font.render(line, True, color)
-            data_panel_surface.blit(action_text_surface, (column_width + 10, i * row_height + 70))  # Right column
+        # Column Header: "Current Action Statistics"
+        action_header_surface = pygame.font.Font(None, 32).render("Current Action Statistics", True, color)
+        data_panel_surface.blit(action_header_surface, (column_width + 10, 65))
 
-        # Draw column and row lines
-        for row in range(7):  # 6 rows, so 7 horizontal lines
-            pygame.draw.line(data_panel_surface, (100, 100, 100), (0, row * row_height + 60),
-                             (data_panel_surface.get_width(), row * row_height + 60), 1)
+        # Define serve area bounds
+        serve_area_x_min, serve_area_x_max = 0, 1.52
+        serve_area_y_min, serve_area_y_max = -20, 0
+        serve_area_z_min, serve_area_z_max = 0, 20
+
+        # Current Action Statistics section
+        action_start_y = 95
+        action_stats = {
+            "Throw Point": f"({result.throw_point[0]:.2f}, {result.throw_point[1]:.2f}, {result.throw_point[2]:.2f})",
+            "Highest Point": f"({result.highest_point[0]:.2f}, {result.highest_point[1]:.2f}, {result.highest_point[2]:.2f})",
+            "Hit Point": f"({result.hit_point[0]:.2f}, {result.hit_point[1]:.2f}, {result.hit_point[2]:.2f})",
+            "Angle with Vertical": f"{result.angle_with_vertical:.1f} °",
+            "Tossed Upward Distance": f"{result.tossed_upward_distance:.1f} cm",
+        }
+
+        for i, (label, value) in enumerate(action_stats.items()):
+            if "Point" in label:
+                # Check if the point is within serve area bounds
+                x, y, z,_ = getattr(result, label.replace(" ", "_").lower())  # Access point coordinates dynamically
+                in_serve_area = (serve_area_x_min <= x <= serve_area_x_max and
+                                 serve_area_y_min <= y <= serve_area_y_max and
+                                 serve_area_z_min <= z <= serve_area_z_max)
+                point_color = (255, 255, 255) if in_serve_area else (255, 0, 255)  # Magenta for unexpected case
+            elif label == "Angle with Vertical":
+                point_color = (255, 255, 255) if result.angle_with_vertical <= 30 else (255, 0, 255)  # Magenta for > 30°
+            elif label == "Tossed Upward Distance":
+                point_color = (255, 255, 255) if result.tossed_upward_distance >= 16 else (
+                255, 0, 255)  # Magenta for < 16 cm
+            else:
+                point_color = color  # Default to white for other cases
+
+            # Render each line with the determined color
+            action_text_surface = font.render(f"{label}: {value}", True, point_color)
+            data_panel_surface.blit(action_text_surface, (column_width + 10, action_start_y + i * row_height))
+
+        # Draw table lines for layout
+        for row in range(8):  # Adjusted for added headers
+            pygame.draw.line(data_panel_surface, (100, 100, 100), (0, 60 + row * row_height),
+                             (data_panel_surface.get_width(), 60 + row * row_height), 1)
 
         pygame.draw.line(data_panel_surface, (100, 100, 100), (column_width, 60),
-                         (column_width, row_height * 8), 1)
+                         (column_width, 60 + row_height * 7), 1)
 
         # Display the data panel on the screen
         screen.blit(data_panel_surface, (x_loc, y_loc))
@@ -563,26 +608,17 @@ class TableTennisGame:
         }
         self.action_segments.append(action_segment)
 
-        # Update data panel text
-        self.data_panel_text = (
-            f"Foul Serves/Total Serve Actions:  {self.foul_serve_count} / {self.serve_count}\n\n"
-
-            "Foul Statistics\n"
-            f"In Front of the End Line: {self.foul_stats['In Front of the End Line']}\n"
-            f"Beyond the sideline extension: {self.foul_stats['Beyond the sideline extension']}\n"
-            f"Tossed from Below Table Surface: {self.foul_stats['Tossed from Below Table Surface']}\n"
-            f"Backward Angle More Than 30°: {self.foul_stats['Backward Angle More Than 30°']}\n"
-            f"Tossed Upward Less Than 16 cm: {self.foul_stats['Tossed Upward Less Than 16 cm']}\n\n"
-
-            "Current Action Statistics\n"
-            f"Throw Point: ({throw_point[0]:.2f}, {throw_point[1]:.2f}, {throw_point[2]:.2f})\n"
-            f"Highest Point: ({highest_point[0]:.2f}, {highest_point[1]:.2f}, {highest_point[2]:.2f})\n"
-            f"Hit Point: ({hit_point[0]:.2f}, {hit_point[1]:.2f}, {hit_point[2]:.2f})\n"
-            f"Angle with Vertical: {angle_with_vertical:.2f} °\n"
-            f"Tossed Upward Distance: {tossed_upward_distance:.2f} cm\n\n"
-
-            "Current Fouls:\n" +
-            "\n".join(f" - {foul}" for foul in current_fouls) if current_fouls else "None"
+        # Create FoulCheckResult
+        self.foul_check_result = FoulCheckResult(
+            throw_point=throw_point,
+            highest_point=highest_point,
+            hit_point=hit_point,
+            angle_with_vertical=angle_with_vertical,
+            tossed_upward_distance=tossed_upward_distance,
+            current_fouls=current_fouls.copy(),
+            foul_serve_count=self.foul_serve_count,
+            serve_count=self.serve_count,
+            foul_stats=self.foul_stats.copy()
         )
 
     def update_frame_cache(self, frame, frame_index):
@@ -720,7 +756,8 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     bar_x = screen_width - VIDEO_WIDTH
     bar_y = VIDEO_HEIGHT / 2  # Position the bar under the video feeds
     # Draw the bar background
-    pygame.draw.rect(screen, (200, 200, 200), (bar_x, bar_y, bar_width, bar_height))  # Light gray background
+    pygame.draw.rect(screen, (128, 128, 128), (bar_x, bar_y, bar_width, bar_height))  # Gray background
+
     # Calculate min and max frame indices
     if game.action_segments:
         min_frame_index = min(segment['start_frame'] for segment in game.action_segments)
@@ -732,7 +769,6 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     if max_frame_index == min_frame_index:
         max_frame_index += 1
 
-    print("game.action_segments=",game.action_segments)
     # For each action segment, draw its representation on the bar
     for segment in game.action_segments:
         start_frame = segment['start_frame']
@@ -745,9 +781,9 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
 
         # Determine color based on fouls
         if segment['current_fouls']:
-            color = (255, 0, 0)  # Red for fouls
+            color = (255, 0, 255)  # Magenta for fouls
         else:
-            color = (0, 255, 0)  # Green for no fouls
+            color = (255, 255, 255)  # White for no fouls
 
         # Draw the rectangle for the action segment
         pygame.draw.rect(screen, color, (start_x, bar_y, segment_width, bar_height))
@@ -759,17 +795,16 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
 
         # Calculate positions
         throw_x = bar_x + ((throw_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
-        highest_x = bar_x + (
-                (highest_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        highest_x = bar_x + ((highest_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
         hit_x = bar_x + ((hit_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
 
         # Draw markers
-        pygame.draw.line(screen, (0, 0, 255), (throw_x, bar_y), (throw_x, bar_y + bar_height),
-                         2)  # Blue line for throw point
-        pygame.draw.line(screen, (255, 255, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height),
-                         2)  # Yellow line for highest point
-        pygame.draw.line(screen, (255, 165, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height),
-                         2)  # Orange line for hit point
+        pygame.draw.line(screen, (255, 255, 0), (throw_x, bar_y), (throw_x, bar_y + bar_height),
+                         2)  # Yellow for throw point
+        pygame.draw.line(screen, (255, 0, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height),
+                         2)  # Red for highest point
+        pygame.draw.line(screen, (0, 255, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height), 2)  # Green for hit point
+
     # Optionally, draw current frame marker
     current_x = bar_x + ((frame_index - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
     pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height),
@@ -781,29 +816,27 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     legend_y = bar_y + bar_height + 10  # Position directly under the bar
 
     # Draw colored rectangles with labels
-    # Green rectangle for actions without fouls
-    pygame.draw.rect(screen, (0, 255, 0), (legend_x, legend_y, 20, 10))
+    pygame.draw.rect(screen, (255, 255, 255), (legend_x, legend_y, 20, 10))  # White for no foul
     legend_text_no_foul = legend_font.render("No Foul", True, (255, 255, 255))
     screen.blit(legend_text_no_foul, (legend_x + 25, legend_y - 5))
 
-    # Red rectangle for actions with fouls
-    pygame.draw.rect(screen, (255, 0, 0), (legend_x + 100, legend_y, 20, 10))
+    pygame.draw.rect(screen, (255, 0, 255), (legend_x + 100, legend_y, 20, 10))  # Magenta for foul
     legend_text_foul = legend_font.render("Foul", True, (255, 255, 255))
     screen.blit(legend_text_foul, (legend_x + 125, legend_y - 5))
 
     # Lines for key points
-    # Blue line for throw point
-    pygame.draw.line(screen, (0, 0, 255), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5), 2)
+    pygame.draw.line(screen, (255, 255, 0), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5),
+                     2)  # Yellow for throw point
     legend_text_throw = legend_font.render("Throw Point", True, (255, 255, 255))
     screen.blit(legend_text_throw, (legend_x + 225, legend_y - 5))
 
-    # Yellow line for highest point
-    pygame.draw.line(screen, (255, 255, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5), 2)
+    pygame.draw.line(screen, (255, 0, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5),
+                     2)  # Red for highest point
     legend_text_highest = legend_font.render("Highest Point", True, (255, 255, 255))
     screen.blit(legend_text_highest, (legend_x + 375, legend_y - 5))
 
-    # Orange line for hit point
-    pygame.draw.line(screen, (255, 165, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5), 2)
+    pygame.draw.line(screen, (0, 255, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5),
+                     2)  # Green for hit point
     legend_text_hit = legend_font.render("Hit Point", True, (255, 255, 255))
     screen.blit(legend_text_hit, (legend_x + 525, legend_y - 5))
 
@@ -814,7 +847,7 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
         highest_frame = latest_segment['highest_frame']
         hit_frame = latest_segment['hit_frame']
 
-        # 从缓存中获取帧图像
+        # Retrieve frame images from cache
         throw_img = game.get_cached_frame_image(throw_frame, game.frame_cache)
         highest_img = game.get_cached_frame_image(highest_frame, game.frame_cache)
         hit_img = game.get_cached_frame_image(hit_frame, game.frame_cache)
@@ -835,7 +868,7 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
             hit_text = label_font.render(f"{latest_segment_index} Hit", True, (255, 255, 255))
             screen.blit(hit_text, (legend_x + 440, image_y))
 
-    return bar_height, bar_y,bar_x
+    return bar_height, bar_y, bar_x
 
 
 def draw_title(game, screen, screen_width):

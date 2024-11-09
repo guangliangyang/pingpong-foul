@@ -26,6 +26,9 @@ model = YOLO(model_path, verbose=False)
 model.to(device)
 print("Using GPU:", model.device)
 
+# Initialize font for frame index display
+font = pygame.font.Font(None, 36)  # Use None for default font, 36 for size
+
 # Create empty images for key frames
 empty_frame = np.zeros((video_height, video_width, 3), dtype=np.uint8)
 
@@ -99,6 +102,9 @@ def find_key_points(trajectory, x_acceleration_threshold=5.0):
 
     return (throw_point, throw_frame), (highest_point, highest_frame), (hit_point, hit_frame)
 
+def render_frame_index(surface, text, position=(10, 10)):
+    text_surface = font.render(text, True, (0, 0, 0))  # White text
+    surface.blit(text_surface, position)
 
 # Video processing function
 def process_video(video_path):
@@ -109,6 +115,7 @@ def process_video(video_path):
     paused = False
 
     throw_frame, highest_frame, hit_frame = empty_frame, empty_frame, empty_frame
+    throw_frame_no, highest_frame_no, hit_frame_no = None, None, None
 
     while cap.isOpened():
         for event in pygame.event.get():
@@ -219,22 +226,33 @@ def process_video(video_path):
                     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count)
 
             # Convert frame to RGB format for pygame and resize
+            # Convert frame to RGB format for pygame and resize
             frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
             frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
-            screen.blit(pygame.transform.scale(frame_surface, (video_width, video_height)), (0, 0))  # Top-left
+            frame_surface = pygame.transform.scale(frame_surface, (video_width, video_height))
 
-            # Display the throw, highest, and hit frames in the corresponding quadrants
+            # Render the frame index on main frame surface
+            render_frame_index(frame_surface, f"Frame: {frame_count}")
+
+            # Display the main video frame
+            screen.blit(frame_surface, (0, 0))  # Top-left
+
+            # Display the throw, highest, and hit frames with their respective frame indices
             throw_surface = pygame.surfarray.make_surface(np.rot90(cv2.cvtColor(throw_frame, cv2.COLOR_BGR2RGB)))
-            screen.blit(pygame.transform.scale(throw_surface, (video_width, video_height)),
-                        (video_width, 0))  # Top-right
+            throw_surface = pygame.transform.scale(throw_surface, (video_width, video_height))
+            render_frame_index(throw_surface, f"Throw Frame: {throw_frame_no}" if throw_frame_no else "No Throw Point")
+            screen.blit(throw_surface, (video_width, 0))  # Top-right
 
             highest_surface = pygame.surfarray.make_surface(np.rot90(cv2.cvtColor(highest_frame, cv2.COLOR_BGR2RGB)))
-            screen.blit(pygame.transform.scale(highest_surface, (video_width, video_height)),
-                        (0, video_height))  # Bottom-left
+            highest_surface = pygame.transform.scale(highest_surface, (video_width, video_height))
+            render_frame_index(highest_surface,
+                               f"Highest Frame: {highest_frame_no}" if highest_frame_no else "No Highest Point")
+            screen.blit(highest_surface, (0, video_height))  # Bottom-left
 
             hit_surface = pygame.surfarray.make_surface(np.rot90(cv2.cvtColor(hit_frame, cv2.COLOR_BGR2RGB)))
-            screen.blit(pygame.transform.scale(hit_surface, (video_width, video_height)),
-                        (video_width, video_height))  # Bottom-right
+            hit_surface = pygame.transform.scale(hit_surface, (video_width, video_height))
+            render_frame_index(hit_surface, f"Hit Frame: {hit_frame_no}" if hit_frame_no else "No Hit Point")
+            screen.blit(hit_surface, (video_width, video_height))  # Bottom-right
 
             pygame.display.flip()
 
