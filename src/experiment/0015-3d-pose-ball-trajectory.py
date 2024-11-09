@@ -99,6 +99,7 @@ class TableTennisGame:
         self.data_panel_text = ""
 
         self.frame_cache = []
+        self.frame_cache_cam2 = []  # Separate cache for Camera 2
         self.frame_cache_limit = 200
 
     def load_calibration_data(self):
@@ -627,10 +628,12 @@ class TableTennisGame:
             foul_stats=self.foul_stats.copy()
         )
 
-    def update_frame_cache(self, frame, frame_index):
-        if len(self.frame_cache) >= self.frame_cache_limit:
-            self.frame_cache.pop(0)
-        self.frame_cache.append((frame_index, frame))
+    def update_frame_cache(self, frame, frame_index, camera_key="camera1"):
+        cache = self.frame_cache if camera_key == "camera1" else self.frame_cache_cam2
+
+        if len(cache) >= self.frame_cache_limit:
+            cache.pop(0)
+        cache.append((frame_index, frame))
 
     def get_cached_frame_image(self, frame_index, frame_cache):
         for cached_index, frame in frame_cache:
@@ -663,7 +666,8 @@ def main():
             frame1 = game.read_frame("camera1")
             frame2 = game.read_frame("camera2")
             frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
-            game.update_frame_cache(frame1, frame_index)
+            game.update_frame_cache(frame1, frame_index, "camera1")
+            game.update_frame_cache(frame2, frame_index, "camera2")
             game.VIDEO_WIDTH, game.VIDEO_HEIGHT = frame1.shape[1], frame1.shape[0]
             landmarks1 = game.process_frame_for_skeleton(frame1, game.pose_camera1, "camera1")
             landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
@@ -734,7 +738,7 @@ def main():
         bar_height, bar_y ,bar_x= draw_action_segmentation(frame_index, game, screen, screen_width)
         data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
         data_panel.fill((50, 50, 50))  # Dark gray placeholder color
-        data_panel_y = bar_y + bar_height + 210
+        data_panel_y = bar_y + bar_height + 380
         game.draw_data_panel(data_panel, screen, font, screen_width - VIDEO_WIDTH, data_panel_y)
         draw_title(game, screen, screen_width)
 
@@ -761,7 +765,6 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     bar_width = VIDEO_WIDTH
     bar_x = screen_width - VIDEO_WIDTH
     bar_y = VIDEO_HEIGHT / 2  # Position the bar under the video feeds
-    # Draw the bar background
     pygame.draw.rect(screen, (128, 128, 128), (bar_x, bar_y, bar_width, bar_height))  # Gray background
 
     # Calculate min and max frame indices
@@ -770,109 +773,87 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
         max_frame_index = max(segment['end_frame'] for segment in game.action_segments)
     else:
         min_frame_index = 0
-        max_frame_index = frame_index  # Use the current frame index
-    # Avoid division by zero
+        max_frame_index = frame_index
     if max_frame_index == min_frame_index:
         max_frame_index += 1
 
-    # For each action segment, draw its representation on the bar
     for segment in game.action_segments:
         start_frame = segment['start_frame']
         end_frame = segment['end_frame']
-
         start_x = bar_x + ((start_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
         end_x = bar_x + ((end_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
-
         segment_width = end_x - start_x
 
-        # Determine color based on fouls
-        if segment['current_fouls']:
-            color = (0, 0, 255)  # Magenta for fouls
-        else:
-            color = (255, 255, 255)  # White for no fouls
-
-        # Draw the rectangle for the action segment
+        color = (0, 0, 255) if segment['current_fouls'] else (255, 255, 255)
         pygame.draw.rect(screen, color, (start_x, bar_y, segment_width, bar_height))
 
-        # Draw markers for throw_frame, highest_frame, hit_frame
-        throw_frame = segment['throw_frame']
-        highest_frame = segment['highest_frame']
-        hit_frame = segment['hit_frame']
-
-        # Calculate positions
+        throw_frame, highest_frame, hit_frame = segment['throw_frame'], segment['highest_frame'], segment['hit_frame']
         throw_x = bar_x + ((throw_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
         highest_x = bar_x + ((highest_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
         hit_x = bar_x + ((hit_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
 
-        # Draw markers
-        pygame.draw.line(screen, (255, 255, 0), (throw_x, bar_y), (throw_x, bar_y + bar_height),
-                         2)  # Yellow for throw point
-        pygame.draw.line(screen, (255, 0, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height),
-                         2)  # Red for highest point
-        pygame.draw.line(screen, (0, 255, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height), 2)  # Green for hit point
+        pygame.draw.line(screen, (255, 255, 0), (throw_x, bar_y), (throw_x, bar_y + bar_height), 2)
+        pygame.draw.line(screen, (255, 0, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height), 2)
+        pygame.draw.line(screen, (0, 255, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height), 2)
 
-    # Optionally, draw current frame marker
     current_x = bar_x + ((frame_index - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
-    pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height),
-                     1)  # White line for current frame
+    pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height), 1)
 
     # Add legend under the bar
     legend_font = pygame.font.SysFont("Arial", 16)
-    legend_x = bar_x
-    legend_y = bar_y + bar_height + 10  # Position directly under the bar
+    legend_x, legend_y = bar_x, bar_y + bar_height + 10
 
-    # Draw colored rectangles with labels
-    pygame.draw.rect(screen, (255, 255, 255), (legend_x, legend_y, 20, 10))  # White for no foul
-    legend_text_no_foul = legend_font.render("No Foul", True, (255, 255, 255))
-    screen.blit(legend_text_no_foul, (legend_x + 25, legend_y - 5))
+    pygame.draw.rect(screen, (255, 255, 255), (legend_x, legend_y, 20, 10))
+    screen.blit(legend_font.render("No Foul", True, (255, 255, 255)), (legend_x + 25, legend_y - 5))
+    pygame.draw.rect(screen, (0, 0, 255), (legend_x + 100, legend_y, 20, 10))
+    screen.blit(legend_font.render("Foul", True, (255, 255, 255)), (legend_x + 125, legend_y - 5))
 
-    pygame.draw.rect(screen, (0, 0, 255), (legend_x + 100, legend_y, 20, 10))  # Magenta for foul
-    legend_text_foul = legend_font.render("Foul", True, (255, 255, 255))
-    screen.blit(legend_text_foul, (legend_x + 125, legend_y - 5))
-
-    # Lines for key points
-    pygame.draw.line(screen, (255, 255, 0), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5),
-                     2)  # Yellow for throw point
-    legend_text_throw = legend_font.render("Throw Point", True, (255, 255, 255))
-    screen.blit(legend_text_throw, (legend_x + 225, legend_y - 5))
-
-    pygame.draw.line(screen, (255, 0, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5),
-                     2)  # Red for highest point
-    legend_text_highest = legend_font.render("Highest Point", True, (255, 255, 255))
-    screen.blit(legend_text_highest, (legend_x + 375, legend_y - 5))
-
-    pygame.draw.line(screen, (0, 255, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5),
-                     2)  # Green for hit point
-    legend_text_hit = legend_font.render("Hit Point", True, (255, 255, 255))
-    screen.blit(legend_text_hit, (legend_x + 525, legend_y - 5))
+    pygame.draw.line(screen, (255, 255, 0), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5), 2)
+    screen.blit(legend_font.render("Throw Point", True, (255, 255, 255)), (legend_x + 225, legend_y - 5))
+    pygame.draw.line(screen, (255, 0, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5), 2)
+    screen.blit(legend_font.render("Highest Point", True, (255, 255, 255)), (legend_x + 375, legend_y - 5))
+    pygame.draw.line(screen, (0, 255, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5), 2)
+    screen.blit(legend_font.render("Hit Point", True, (255, 255, 255)), (legend_x + 525, legend_y - 5))
 
     if game.action_segments:
         latest_segment = game.action_segments[-1]
         latest_segment_index = len(game.action_segments)
-        throw_frame = latest_segment['throw_frame']
-        highest_frame = latest_segment['highest_frame']
-        hit_frame = latest_segment['hit_frame']
 
-        # Retrieve frame images from cache
-        throw_img = game.get_cached_frame_image(throw_frame, game.frame_cache)
-        highest_img = game.get_cached_frame_image(highest_frame, game.frame_cache)
-        hit_img = game.get_cached_frame_image(hit_frame, game.frame_cache)
+        # Retrieve Camera 1 images
+        throw_img_cam1 = game.get_cached_frame_image(latest_segment['throw_frame'], game.frame_cache)
+        highest_img_cam1 = game.get_cached_frame_image(latest_segment['highest_frame'], game.frame_cache)
+        hit_img_cam1 = game.get_cached_frame_image(latest_segment['hit_frame'], game.frame_cache)
+
+        # Retrieve Camera 2 images (assuming a separate cache for Camera 2)
+        throw_img_cam2 = game.get_cached_frame_image(latest_segment['throw_frame'], game.frame_cache_cam2)
+        highest_img_cam2 = game.get_cached_frame_image(latest_segment['highest_frame'], game.frame_cache_cam2)
+        hit_img_cam2 = game.get_cached_frame_image(latest_segment['hit_frame'], game.frame_cache_cam2)
 
         image_y = legend_y + 30
         label_font = pygame.font.SysFont("Arial", 14)
 
-        if throw_img:
-            screen.blit(throw_img, (legend_x, image_y))
-            throw_text = label_font.render(f"{latest_segment_index} Throw", True, (255, 255, 255))
-            screen.blit(throw_text, (legend_x, image_y))
-        if highest_img:
-            screen.blit(highest_img, (legend_x + 220, image_y))
-            highest_text = label_font.render(f"{latest_segment_index} Highest", True, (255, 255, 255))
-            screen.blit(highest_text, (legend_x + 220, image_y))
-        if hit_img:
-            screen.blit(hit_img, (legend_x + 440, image_y))
-            hit_text = label_font.render(f"{latest_segment_index} Hit", True, (255, 255, 255))
-            screen.blit(hit_text, (legend_x + 440, image_y))
+        # Display Camera 1 Images
+        if throw_img_cam1:
+            screen.blit(throw_img_cam1, (legend_x, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Throw", True, (255, 255, 255)), (legend_x, image_y))
+        if highest_img_cam1:
+            screen.blit(highest_img_cam1, (legend_x + 220, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Highest", True, (255, 255, 255)), (legend_x + 220, image_y))
+        if hit_img_cam1:
+            screen.blit(hit_img_cam1, (legend_x + 440, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Hit", True, (255, 255, 255)), (legend_x + 440, image_y))
+
+        # Display Camera 2 Images (Offset vertically)
+        image_y_cam2 = image_y + 170  # Adjust vertical position for Camera 2 images
+        if throw_img_cam2:
+            screen.blit(throw_img_cam2, (legend_x, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Throw", True, (255, 255, 255)), (legend_x, image_y_cam2))
+        if highest_img_cam2:
+            screen.blit(highest_img_cam2, (legend_x + 220, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Highest", True, (255, 255, 255)), (legend_x + 220, image_y_cam2))
+        if hit_img_cam2:
+            screen.blit(hit_img_cam2, (legend_x + 440, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Hit", True, (255, 255, 255)), (legend_x + 440, image_y_cam2))
 
     return bar_height, bar_y, bar_x
 
