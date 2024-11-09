@@ -24,7 +24,7 @@ VIDEO_WIDTH = 640.0
 VIDEO_HEIGHT = 480.0
 ACTION_3D_Y_SPLIT = 0.4
 
-SYS_TITLE = "Table Tennis Foul Detection System"
+SYS_TITLE = "Foul Detection of Table Tennis"
 
 
 from dataclasses import dataclass, field
@@ -154,7 +154,7 @@ class TableTennisGame:
         ]
         for start, end in connections:
             xs, ys, zs = zip(skeleton_3d[start], skeleton_3d[end])
-            self.ax.plot(xs, ys, zs, color='green')  # Set skeleton color to green
+            self.ax.plot(xs, ys, zs, color='lightgreen')  # Set skeleton color to green
 
     def draw_table_points_calibration(self, frame, points, coordinates):
         for (x, y), (x3d, y3d, z3d) in zip(points, coordinates):
@@ -227,13 +227,19 @@ class TableTennisGame:
 
         # Plot the table net
         self.ax.plot([net_points[0][0], net_points[1][0]], [net_points[0][1], net_points[1][1]],
-                     [net_points[0][2], net_points[1][2]], 'r-')  # Left vertical line
+                     [net_points[0][2], net_points[1][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Left vertical line
 
         self.ax.plot([net_points[2][0], net_points[3][0]], [net_points[2][1], net_points[3][1]],
-                     [net_points[2][2], net_points[3][2]], 'r-')  # Right vertical line
+                     [net_points[2][2], net_points[3][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Right vertical line
 
         self.ax.plot([net_points[0][0], net_points[2][0]], [net_points[0][1], net_points[2][1]],
-                     [net_points[0][2], net_points[2][2]], 'r-')  # Top horizontal line
+                     [net_points[0][2], net_points[2][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Top horizontal line
 
     def draw_serve_area_3d_cube(self):
         # Define the 8 corner points of the cube
@@ -255,7 +261,8 @@ class TableTennisGame:
                 [points[start][0], points[end][0]],
                 [points[start][1], points[end][1]],
                 [points[start][2], points[end][2]],
-                'g:'
+                color=(0.678, 0.847, 0.902),  # RGB values for light blue
+                linestyle=':'
             )
 
 
@@ -390,7 +397,7 @@ class TableTennisGame:
             (0, 0, 0)  # Close the loop to complete the rectangle
         ]
         x_table, y_table, z_table = zip(*table_corners)
-        self.ax.plot(x_table, y_table, z_table, color="red", linewidth=2)
+        self.ax.plot(x_table, y_table, z_table, color="lightblue", linewidth=2)
 
         # Plot skeleton structure if available
         if skeleton_3d:
@@ -415,10 +422,10 @@ class TableTennisGame:
                     try:
                         tck, _ = splprep([xs, ys, zs], s=0)
                         smooth_points = splev(np.linspace(0, 1, 100), tck)
-                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='blue', linewidth=2)
+                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='black', linewidth=2)
                     except ValueError as e:
                         logging.warning(f"Spline interpolation failed: {e}")
-                        self.ax.plot(xs, ys, zs, color="blue", linewidth=1, linestyle="--")
+                        self.ax.plot(xs, ys, zs, color="black", linewidth=1, linestyle="--")
 
             # Plot each key point with a different color and add labels
             self.ax.scatter(*throw_point[:3], color='yellow', s=2)
@@ -439,7 +446,7 @@ class TableTennisGame:
             Line2D([0], [0], marker='o', color='w', label='Throw Point', markerfacecolor='yellow', markersize=8),
             Line2D([0], [0], marker='o', color='w', label='Highest Point', markerfacecolor='red', markersize=8),
             Line2D([0], [0], marker='o', color='w', label='Hit Point', markerfacecolor='green', markersize=8),
-            Line2D([0], [0], linestyle='--', color='green', label='Serve Area')
+            Line2D([0], [0], linestyle='--', color='lightblue', label='Serve Area')
         ]
 
         # Add the fixed-position legend
@@ -508,12 +515,11 @@ class TableTennisGame:
                 in_serve_area = (serve_area_x_min <= x <= serve_area_x_max and
                                  serve_area_y_min <= y <= serve_area_y_max and
                                  serve_area_z_min <= z <= serve_area_z_max)
-                point_color = (255, 255, 255) if in_serve_area else (255, 0, 255)  # Magenta for unexpected case
+                point_color = (255, 255, 255) if in_serve_area else (0, 0, 255)  # Magenta for unexpected case
             elif label == "Angle with Vertical":
-                point_color = (255, 255, 255) if result.angle_with_vertical <= 30 else (255, 0, 255)  # Magenta for > 30°
+                point_color = (255, 255, 255) if result.angle_with_vertical <= 30 else (0, 0, 255)  # Magenta for > 30°
             elif label == "Tossed Upward Distance":
-                point_color = (255, 255, 255) if result.tossed_upward_distance >= 16 else (
-                255, 0, 255)  # Magenta for < 16 cm
+                point_color = (255, 255, 255) if result.tossed_upward_distance >= 16 else (0, 0, 255)  # Magenta for < 16 cm
             else:
                 point_color = color  # Default to white for other cases
 
@@ -781,7 +787,7 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
 
         # Determine color based on fouls
         if segment['current_fouls']:
-            color = (255, 0, 255)  # Magenta for fouls
+            color = (0, 0, 255)  # Magenta for fouls
         else:
             color = (255, 255, 255)  # White for no fouls
 
@@ -820,7 +826,7 @@ def draw_action_segmentation(frame_index, game, screen, screen_width):
     legend_text_no_foul = legend_font.render("No Foul", True, (255, 255, 255))
     screen.blit(legend_text_no_foul, (legend_x + 25, legend_y - 5))
 
-    pygame.draw.rect(screen, (255, 0, 255), (legend_x + 100, legend_y, 20, 10))  # Magenta for foul
+    pygame.draw.rect(screen, (0, 0, 255), (legend_x + 100, legend_y, 20, 10))  # Magenta for foul
     legend_text_foul = legend_font.render("Foul", True, (255, 255, 255))
     screen.blit(legend_text_foul, (legend_x + 125, legend_y - 5))
 
