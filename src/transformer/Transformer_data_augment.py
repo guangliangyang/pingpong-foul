@@ -14,35 +14,35 @@ losses = []
 with open('0020-trajectories_for_training_3d_truth.json', 'r') as f:
     data = json.load(f)
 
-# Data augmentation functions
+# Data augmentation functions for flattened data
 def scale_trajectory(sequence, scale_range=(0.9, 1.1)):
     scale_factor = np.random.uniform(*scale_range)
     scaled_sequence = []
-    for point in sequence:
+    for i in range(0, len(sequence), 4):  # Step by 4 (x, y, z, frame_index)
         scaled_point = [
-            point[0] * scale_factor,  # x
-            point[1] * scale_factor,  # y
-            point[2] * scale_factor,  # z
-            point[3]                  # frame_index remains the same
+            sequence[i] * scale_factor,         # x
+            sequence[i + 1] * scale_factor,     # y
+            sequence[i + 2] * scale_factor,     # z
+            sequence[i + 3]                    # frame_index (no scaling)
         ]
-        scaled_sequence.append(scaled_point)
+        scaled_sequence.extend(scaled_point)
     return scaled_sequence
 
 def add_noise(sequence, noise_std=0.005):
     noisy_sequence = []
-    for point in sequence:
+    for i in range(0, len(sequence), 4):  # Step by 4 (x, y, z, frame_index)
         noisy_point = [
-            point[0] + np.random.normal(0, noise_std),  # x
-            point[1] + np.random.normal(0, noise_std),  # y
-            point[2] + np.random.normal(0, noise_std),  # z
-            point[3]                                    # frame_index remains the same
+            sequence[i] + np.random.normal(0, noise_std),       # x
+            sequence[i + 1] + np.random.normal(0, noise_std),   # y
+            sequence[i + 2] + np.random.normal(0, noise_std),   # z
+            sequence[i + 3]                                    # frame_index (no noise)
         ]
-        noisy_sequence.append(noisy_point)
+        noisy_sequence.extend(noisy_point)
     return noisy_sequence
 
 # Dataset class that processes data with data augmentation
 class TrajectoryDataset(Dataset):
-    def __init__(self, data, augment_multiplier=100):
+    def __init__(self, data, augment_multiplier=1000):
         self.data = data
         self.sequences = []
         self.labels = []
