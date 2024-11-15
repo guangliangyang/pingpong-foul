@@ -4,7 +4,7 @@ from ultralytics import YOLO
 from collections import defaultdict
 import numpy as np
 
-model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer03.pt"
 video_path = "C:\\workspace\\datasets\\foul-video\\c1.mp4"
 
 # Load the YOLO11 model

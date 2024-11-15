@@ -17,7 +17,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # Set parameters
 confidence_threshold = 0.1
-model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer.pt"
+model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer03.pt"
 video_path = "C:\\workspace\\datasets\\foul-video\\c1.mp4"
 
 # Load YOLO model

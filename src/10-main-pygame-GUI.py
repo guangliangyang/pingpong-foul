@@ -1,576 +1,878 @@
-import os
-import sys
-import threading
-import pygame
-import queue
+import json
+import math
+
 import cv2
 import numpy as np
-import time
-import logging
+import pygame
+import sys
 import mediapipe as mp
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+import logging
+import torch
+from ultralytics import YOLO
+from scipy.interpolate import splprep, splev
+from scipy.signal import savgol_filter
 
-SYS_TITLE = "Table Tennis Foul Detection System"
-GOLDEN_RATIO = 1.618
-DEBUG = True
 
-UPDATE_INTERVAL_SKELETON_SURFACE_MS = 100
-UPDATE_INTERVAL_STATISTICS_TABLE_MS = 100
-UPDATE_INTERVAL_DATA_PANEL_S = 5
 
-def calculate_area(quad):
-    # Calculate the area of a quadrilateral given its four corner points
-    return 0.5 * abs(
-        quad[0][0]*quad[1][1] + quad[1][0]*quad[2][1] + quad[2][0]*quad[3][1] + quad[3][0]*quad[0][1] -
-        (quad[1][0]*quad[0][1] + quad[2][0]*quad[1][1] + quad[3][0]*quad[2][1] + quad[0][0]*quad[3][1])
-    )
+# Set up logging
+logging.basicConfig(level=logging.DEBUG)
 
-def calculate_layout(total_width, total_height, title_label_height, left_ratio):
-    left_width = int(total_width * left_ratio)
-    right_width = total_width - left_width
+VIDEO_WIDTH = 640.0
+VIDEO_HEIGHT = 480.0
+ACTION_3D_Y_SPLIT = 0.4
 
-    def region(x, y, width, height):
-        return {"x": x, "y": y, "width": width, "height": height}
+SYS_TITLE = "Foul Detection of Table Tennis"
 
-    # Use the remaining height after the title region for videos
-    video_height = total_height - title_label_height
 
-    # Divide the video area into 2 rows and 2 columns
-    video_panel_width = left_width // 2
-    video_panel_height = video_height // 2
+from dataclasses import dataclass, field
 
-    # Swap positions of region6 and region7
-    regions = {
-        "title_region": region(0, 0, total_width, title_label_height),
-        "video_region_1": region(0, title_label_height, video_panel_width, video_panel_height),
-        "video_region_2": region(video_panel_width, title_label_height, video_panel_width, video_panel_height),
-        "video_region_3": region(0, title_label_height + video_panel_height, video_panel_width, video_panel_height),
-        "video_region_4": region(video_panel_width, title_label_height + video_panel_height, video_panel_width, video_panel_height),
-        "region7": region(left_width, title_label_height, right_width, video_panel_height),  # Swapped
-        "region6": region(left_width, title_label_height + video_panel_height, right_width, video_panel_height)  # Swapped
-    }
+@dataclass
+class FoulCheckResult:
+    throw_point: tuple
+    highest_point: tuple
+    hit_point: tuple
+    angle_with_vertical: float
+    tossed_upward_distance: float
+    current_fouls: list = field(default_factory=list)
+    foul_serve_count: int = 0
+    serve_count: int = 0
+    foul_stats: dict = field(default_factory=dict)
 
-    if DEBUG:
-        print(regions)
-
-    return regions
-
-# Custom logging handler to store logs in a list
-class LogHandler(logging.Handler):
-    def __init__(self):
-        super().__init__()
-        self.log_records = []
-        self.max_records = 1000  # Limit the number of records to prevent memory issues
-
-    def emit(self, record):
-        log_entry = self.format(record)
-        self.log_records.append(log_entry)
-        if len(self.log_records) > self.max_records:
-            self.log_records.pop(0)
-
-    def get_logs(self):
-        return self.log_records
-
-# Set up the logging system
-log_handler = LogHandler()
-log_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_handler.setFormatter(formatter)
-
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
-logger.addHandler(log_handler)
-
-# Initialize MediaPipe Pose
-mp_pose = mp.solutions.pose
-pose = mp_pose.Pose()
 
 class TableTennisGame:
     def __init__(self):
-        self.video_playing = False
-        self.video_length = 0
-        self.current_frame = 0
-        self.caps = {}  # Dictionary to hold multiple video captures
+        # Initialize YOLO model for ball tracking
+        model_path = "C:/workspace/projects/pingpong-foul/model/best-yolo11-transfer03.pt"
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model = YOLO(model_path, verbose=False).to(self.device)
+        print("Using GPU:", self.model.device)
+
+        # Initialize MediaPipe Pose for skeleton detection
+        self.mp_pose = mp.solutions.pose
+        self.pose_camera1 = self.mp_pose.Pose()
+        self.pose_camera2 = self.mp_pose.Pose()
+        self.action_segments = []
+
+        # Load calibration data and key points for 3D triangulation
+        self.load_calibration_data()
+        self.load_key_points_for_calibration()
+
+        # Paths for video sources
         self.video_paths = {
             'camera1': 'C:\\workspace\\datasets\\foul-video\\c1.mp4',
-            'camera2': 'C:\\workspace\\datasets\\foul-video\\c2.mp4',
-            'camera3': 'C:\\workspace\\datasets\\foul-video\\c3.mp4',
+            'camera2': 'C:\\workspace\\datasets\\foul-video\\c2.mp4'
         }
-        self.reset_variables()
-        self.CV_CUDA_ENABLED = cv2.cuda.getCudaEnabledDeviceCount() > 0
-        self.image_width = None
-        self.image_height = None
-        self.fps = None
+        self.caps = {
+            "camera1": cv2.VideoCapture(self.video_paths['camera1']),
+            "camera2": cv2.VideoCapture(self.video_paths['camera2'])
+        }
 
-        # Initialize foul counts
-        self.foul_counts = {
-            'Tossed from Below Table Surface': 0,
+        self.foul_stats = {
             'In Front of the End Line': 0,
-            'Backward Angle More Than 30 Degrees': 0,
+            'Beyond the sideline extension': 0,
+
+            'Tossed from Below Table Surface': 0,
+            'Backward Angle More Than 30°': 0,
             'Tossed Upward Less Than 16 cm': 0
         }
+        self.serve_count = 0  # 记录球发球动作的次数
+        self.foul_serve_count = 0
+        self.last_frame_index = None  # 记录上一发球动作的最后帧索引
+        self.foul_checked = False    # 标志位，表示当前轨迹是否已进行犯规统计
 
-        # Variables to track previous positions
-        self.previous_ball_positions = {}
-        self.previous_racket_positions = {}
+        # Store 3D ball trajectory and separate 2D trajectories for each camera
+        self.ball_trajectory_3d = []
+        self.trajectory_2d_camera1 = []
+        self.trajectory_2d_camera2 = []
 
-        # Define constants (adjust these values based on your setup)
-        self.table_surface_y = None
-        self.end_line_x = None
-        self.pixel_to_cm_ratio = None
+        # Initialize plot figure for trajectory visualization
+        self.fig = plt.figure(figsize=(4, 4))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
 
-    def reset_variables(self):
-        self.previous_time = None
-        self.start_time = time.time()
+        # Data panel text
+        self.data_panel_text = ""
 
-    def initialize_video_captures(self):
-        for index, (key, source) in enumerate(self.video_paths.items()):
-            cap = cv2.VideoCapture(source)
-            if not cap.isOpened():
-                logger.error(f"Failed to open video source: {source}")
-                continue  # Skip to the next source
+        self.frame_cache = []
+        self.frame_cache_cam2 = []  # Separate cache for Camera 2
+        self.frame_cache_limit = 200
 
-            # Read a frame to initialize the capture
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                logger.error(f"Failed to read a frame from {source}")
-                cap.release()
-                continue  # Skip to the next source
+    def load_calibration_data(self):
+        with open('0012-calibration_in_ex_trinsic.json', 'r') as f:
+            calibration_data = json.load(f)
+        self.camera1_intrinsics = np.array(calibration_data['camera1']['intrinsics']['camera_matrix'])
+        self.camera1_rot_vec = np.array(calibration_data['camera1']['extrinsics']['rotation_vector'])
+        self.camera1_trans_vec = np.array(calibration_data['camera1']['extrinsics']['translation_vector'])
+        self.camera1_rot_matrix, _ = cv2.Rodrigues(self.camera1_rot_vec)
+        self.proj_matrix1 = np.dot(self.camera1_intrinsics,
+                                   np.hstack((self.camera1_rot_matrix, self.camera1_trans_vec)))
 
-            # Now, get the FPS
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            if fps == 0 or fps is None:
-                logger.warning(f"Failed to retrieve FPS from {source}, defaulting to 30 FPS")
-                fps = 30  # Default FPS if not available
+        self.camera2_intrinsics = np.array(calibration_data['camera2']['intrinsics']['camera_matrix'])
+        self.camera2_rot_vec = np.array(calibration_data['camera2']['extrinsics']['rotation_vector'])
+        self.camera2_trans_vec = np.array(calibration_data['camera2']['extrinsics']['translation_vector'])
+        self.camera2_rot_matrix, _ = cv2.Rodrigues(self.camera2_rot_vec)
+        self.proj_matrix2 = np.dot(self.camera2_intrinsics,
+                                   np.hstack((self.camera2_rot_matrix, self.camera2_trans_vec)))
+        logging.debug("Calibration data loaded successfully.")
 
-            logger.info(f"FPS for {key}: {fps}")
+    def load_key_points_for_calibration(self):
+        with open('0010-calibration_key_points.json', 'r') as f:
+            key_points_data = json.load(f)
+        self.camera1_points = key_points_data["camera1_points"]
+        self.camera2_points = key_points_data["camera2_points"]
+        self.camera1_3d_coordinates = key_points_data["3d_coordinates"][:8]  # First 8 for camera1
+        self.camera2_3d_coordinates = key_points_data["3d_coordinates"][8:]  # Next 8 for camera2
+        logging.debug("2D key points and corresponding 3D coordinates loaded successfully.")
 
-            self.caps[key] = {
-                'cap': cap,
-                'fps': fps,
-                'delay': int(1000 / fps)
-            }
+    def calculate_3d_skeleton(self, landmarks1, landmarks2, VIDEO_WIDTH, VIDEO_HEIGHT):
+        skeleton_3d = []
+        for lm1, lm2 in zip(landmarks1, landmarks2):
+            point1 = np.array([[lm1.x * VIDEO_WIDTH], [lm1.y * VIDEO_HEIGHT]], dtype=np.float32)
+            point2 = np.array([[lm2.x * VIDEO_WIDTH], [lm2.y * VIDEO_HEIGHT]], dtype=np.float32)
+            skeleton_3d.append(self.calculate_3d_coordinates(point1, point2))
+        return skeleton_3d
 
-            if index == 0:
-                self.fps = fps
 
-        if self.fps is None:
-            self.fps = 60  # Default FPS if none of the sources provided it
-        self.delay = int(1000 / self.fps)
+    def draw_skeleton_3d(self, skeleton_3d):
+        # Draw lines connecting the skeleton parts based on their MediaPipe landmark connections
+        connections = [
+            (0, 1), (1, 2), (2, 3),  # Right eye to right ear
+            (0, 4), (4, 5), (5, 6),  # Left eye to left ear
+            (0, 9), (9, 10),  # Nose to mouth
+            (10, 8), (9, 7),  # Mouth to ears
+            (11, 12), (11, 13), (13, 15), (15, 17),  # Left arm
+            (12, 14), (14, 16), (16, 18),  # Right arm
+            (11, 23), (12, 24), (23, 24),  # Body and hips
+            # (23, 25), (24, 26),  # Upper legs
+            # (25, 27), (26, 28),  # Lower legs
+            # (27, 29), (28, 30),  # Ankles to feet
+            # (29, 31), (30, 32)  # Feet
+        ]
+        for start, end in connections:
+            xs, ys, zs = zip(skeleton_3d[start], skeleton_3d[end])
+            self.ax.plot(xs, ys, zs, color='lightgreen')  # Set skeleton color to green
 
-    def get_fps(self):
-        return self.fps
+    def draw_table_points_calibration(self, frame, points, coordinates):
+        for (x, y), (x3d, y3d, z3d) in zip(points, coordinates):
+            cv2.circle(frame, (x, y), radius=5, color=(0, 255, 0), thickness=-1)
+            text = f"({x3d:.2f}, {y3d:.2f}, {z3d:.2f})"
+            #cv2.putText(frame, text, (x + 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-    def stop_video_analysis(self):
-        self.video_playing = False
-        for cap_info in self.caps.values():
-            cap = cap_info['cap']
-            if cap:
-                cap.release()
-        self.caps.clear()
+    def calculate_3d_coordinates(self, point1, point2):
+        points_4d_homogeneous = cv2.triangulatePoints(self.proj_matrix1, self.proj_matrix2, point1, point2)
+        points_3d = points_4d_homogeneous[:3] / points_4d_homogeneous[3]
+        return points_3d.flatten()
 
-    def process_video(self, frames):
-        output_images = {}
-        canvases = {}
-        skeleton_image = None  # To store the skeleton image from camera1
+    def track_ball_2d(self, frame, camera_key, trajectory_2d):
+        results = self.model.track(frame, persist=True, tracker="bytetrack.yaml")
+        if results[0].boxes:
+            box = results[0].boxes[0]
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+            frame_index = int(self.caps[camera_key].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
 
-        for source_key, frame in frames.items():
-            timers = {}
-            start_time = time.time()
+            # Append (x, y, frame_index) to trajectory_2d
+            trajectory_2d.append((cx, cy, frame_index))
 
-            if self.CV_CUDA_ENABLED:
-                cv2.cuda.setDevice(1)
+            # Limit the length of trajectory_2d to avoid overflow
+            if len(trajectory_2d) > 100:
+                trajectory_2d.pop(0)
 
-            timers['initial_setup'] = time.time() - start_time
-            start_time = time.time()
+            return np.array([[cx], [cy]], dtype=np.float32)
+        return None
 
-            image = frame
-
-            if self.image_width is None or self.image_height is None:
-                self.image_width = image.shape[1]
-                self.image_height = image.shape[0]
-
-            # Initialize reference lines if needed
-
-            # Draw bounding boxes and grid on a separate canvas
-            canvas = self.draw_bounding_boxes_and_grid(image)
-
-            timers['draw_bounding_boxes_and_grid'] = time.time() - start_time
-
-            output_image = image
-
-            if DEBUG:
-                for step, duration in timers.items():
-                    logger.debug(f"{source_key} - {step}: {duration:.4f} seconds")
-
-            output_images[source_key] = output_image
-            canvases[source_key] = canvas
-
-            # Process skeleton for camera1
-            if source_key == 'camera1':
-                skeleton_image = self.process_skeleton(frame)
-
-        return output_images, canvases, skeleton_image
-
-    def process_skeleton(self, frame):
-        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(image_rgb)
-
-        # Create a blank image to draw the skeleton
-        skeleton_image = np.zeros_like(frame)
-
+    def process_frame_for_skeleton(self, frame, pose, camera_key):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = pose.process(frame_rgb)
         if results.pose_landmarks:
-            mp_drawing = mp.solutions.drawing_utils
-            mp_drawing.draw_landmarks(
-                skeleton_image,
-                results.pose_landmarks,
-                mp_pose.POSE_CONNECTIONS,
-                mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=2),
-                mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=2, circle_radius=2),
-            )
+            return results.pose_landmarks.landmark
+        return None
 
-        return skeleton_image
-
-    def analyze_fouls(self, source_key):
-        # Simplified foul detection logic
-        pass
-
-    def draw_bounding_boxes_and_grid(self, frame):
-        canvas = np.zeros_like(frame)
-        return canvas
-
-    def analyze_video(self, queue):
-        self.video_playing = True
-        self.start_time = time.time()
-        self.frame_count = 0
-
-        while self.video_playing:
-            frames = {}
-            for key, cap_info in self.caps.items():
-                cap = cap_info['cap']
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    logger.warning(f"Failed to read frame from {key}")
-                    self.video_playing = False
-                    break
-                frames[key] = frame
-
-            if not self.video_playing:
+    def draw_2d_trajectory(self, frame, trajectory_2d, max_distance=20):
+        # Find the frame index where y > ACTION_3D_Y_SPLIT
+        cutoff_index = None
+        for i, point in enumerate(self.ball_trajectory_3d):
+            _, y, _, frame_index = point
+            if y > ACTION_3D_Y_SPLIT:
+                cutoff_index = frame_index
                 break
 
-            output_images, canvases, skeleton_image = self.process_video(frames)
-            queue.put((output_images, canvases, skeleton_image))
+        # Filter the trajectory points to only include those before the cutoff frame index
+        if cutoff_index is not None:
+            filtered_trajectory = [pt for pt in trajectory_2d if pt[2] < cutoff_index]
 
-            self.frame_count += 1
-            time.sleep(self.delay / 1000.0)
+        else:
+            filtered_trajectory = trajectory_2d  # If no cutoff, draw the full trajectory
 
-        self.stop_video_analysis()
+        # Now draw the filtered trajectory
+        if len(filtered_trajectory) < 2:
+            return  # Not enough points to draw
 
-    def close_camera(self):
-        self.stop_video_analysis()
+        for i in range(1, len(filtered_trajectory)):
+            cv2.line(frame, filtered_trajectory[i - 1][:2], filtered_trajectory[i][:2], (255, 0, 0), 2)
+            cv2.circle(frame, filtered_trajectory[i][:2], 3, (0, 255, 255), -1)
 
-class TableTennisApp:
+    def draw_3d_table_net(self):
+        # Coordinates for the table net
+        net_points = [
+            (-0.03, 1.52, 0.185),  # Top left of the net
+            (-0.03, 1.52, 0),  # Bottom left of the net
+            (1.55, 1.52, 0.185),  # Top right of the net
+            (1.55, 1.52, 0)  # Bottom right of the net
+        ]
 
-    def __init__(self, game):
-        self.game = game
-        self.game.app = self
-        self.first_data_update = True
-        self.mode = "video"
-        self.overlay_enabled = False
+        # Plot the table net
+        self.ax.plot([net_points[0][0], net_points[1][0]], [net_points[0][1], net_points[1][1]],
+                     [net_points[0][2], net_points[1][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Left vertical line
 
-        self.queue = queue.Queue(maxsize=1)
+        self.ax.plot([net_points[2][0], net_points[3][0]], [net_points[2][1], net_points[3][1]],
+                     [net_points[2][2], net_points[3][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Right vertical line
 
-        pygame.init()
-        self.screen = pygame.display.set_mode((1530, 930))
-        pygame.display.set_caption(SYS_TITLE)
+        self.ax.plot([net_points[0][0], net_points[2][0]], [net_points[0][1], net_points[2][1]],
+                     [net_points[0][2], net_points[2][2]],
+        color=(0.678, 0.847, 0.902),  # RGB values for light blue
+        linestyle='-')  # Top horizontal line
 
-        self.window_width = 1530
-        self.window_height = 930
+    def draw_serve_area_3d_cube(self):
+        # Define the 8 corner points of the cube
+        points = np.array([
+            (0, 0, 0), (1.52, 0, 0), (1.52, -1.52, 0), (0, -1.52, 0),  # Bottom surface
+            (0, 0, 1), (1.52, 0, 1), (1.52, -1.52, 1), (0, -1.52, 1)  # Top surface
+        ])
 
-        left_ratio = 1020 / 1530
-        title_label_height = 60
+        # Define the edges connecting the points to form the cube
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),  # Bottom surface edges
+            (4, 5), (5, 6), (6, 7), (7, 4),  # Top surface edges
+            (0, 4), (1, 5), (2, 6), (3, 7)  # Vertical edges
+        ]
 
-        self.layout = calculate_layout(
-            total_width=self.window_width,
-            total_height=self.window_height,
-            title_label_height=title_label_height,
-            left_ratio=left_ratio
-        )
+        # Draw the edges of the cube
+        for start, end in edges:
+            self.ax.plot(
+                [points[start][0], points[end][0]],
+                [points[start][1], points[end][1]],
+                [points[start][2], points[end][2]],
+                color=(0.678, 0.847, 0.902),  # RGB values for light blue
+                linestyle=':'
+            )
 
-        self.data_panel_update_interval = UPDATE_INTERVAL_DATA_PANEL_S
-        self.speed_update_interval = 1.0
-        self.data_panel_last_update_time = None
-        self.speed_last_update_time = None
-        self.skeleton_last_update_time = None
-        self.statistics_table_last_update_time = None
-        self.console_last_update_time = None
-        self.console_update_interval = 0.5  # Update console every 0.5 seconds
 
-        self.setup_ui()
+    def find_serve_key_points(self, positions, fps=60.0):
+        # positions = ball_trajectory_3d  # [(x0, y0, z0, f0), (x1, y1, z1, f1), ...]
 
-        # Initialize video captures before getting FPS
-        self.game.initialize_video_captures()
+        # Ensure positions is a NumPy array for easier manipulation
+        positions = np.array(positions)  # shape: (N, 4)
+        if positions.shape[0] < 5:
+            # Not enough data to compute key points
+            return positions[0], positions[0], positions[-1]
 
-        self.fps = self.game.get_fps()
-        if self.fps is None:
-            self.fps = 30
+        # Extract x, y, z, and frame indices
+        x = positions[:, 0]
+        y = positions[:, 1]
+        z = positions[:, 2]
+        frame_indices = positions[:, 3]
+        time = frame_indices / fps  # Convert frame indices to time
 
-        self.video_thread = threading.Thread(target=self.game.analyze_video, args=(self.queue,))
-        self.video_thread.daemon = True
-        self.video_thread.start()
+        # Step 1: Apply Savitzky-Golay filter to smooth the data
+        window_size = 11  # Must be odd and less than the length of the data
+        poly_order = 3  # Polynomial order less than window_size
 
-    def update_statistics_table(self):
-        region = self.layout['region7']
-        stats_surface = pygame.Surface((region['width'], region['height']))
-        stats_surface.fill((255, 255, 255))
+        # Adjust window size if necessary
+        if window_size >= positions.shape[0]:
+            window_size = positions.shape[0] - 1 if positions.shape[0] % 2 == 1 else positions.shape[0] - 2
+            if window_size < 3:
+                # Not enough data for smoothing
+                return positions[0], positions[0], positions[-1]
 
-        font = pygame.font.SysFont('Arial', 24)
-        y_offset = 20
+        x_smooth = savgol_filter(x, window_size, poly_order)
+        y_smooth = savgol_filter(y, window_size, poly_order)
+        z_smooth = savgol_filter(z, window_size, poly_order)
 
-        title_text = "Foul Counts"
-        title_surface = font.render(title_text, True, (0, 0, 0))
-        stats_surface.blit(title_surface, (10, y_offset))
-        y_offset += 40
+        # Step 2: Compute velocities using smoothed data
+        vx = np.gradient(x_smooth, time)
+        vy = np.gradient(y_smooth, time)
+        vz = np.gradient(z_smooth, time)
 
-        for rule, count in self.game.foul_counts.items():
-            text = f"{rule}: {count}"
-            text_surface = font.render(text, True, (0, 0, 0))
-            stats_surface.blit(text_surface, (10, y_offset))
-            y_offset += 30
+        # Step 3: Identify the Highest Point (maximum Z value with y < 0.2)
+        sorted_indices = np.argsort(z_smooth)[::-1]  # Indices sorted by z value in descending order
+        highest_point_index = None
+        for index in sorted_indices:
+            if y_smooth[index] < 0.2:  # Check if y < 0.2
+                highest_point_index = index
+                break
+        if highest_point_index is None:
+            highest_point_index = np.argmax(z_smooth)  # Fall back to max z without y < 0.2 condition
+        highest_point = positions[highest_point_index]
 
-        self.screen.blit(stats_surface, (region['x'], region['y']))
+        # Step 4: Identify the Throw Point
+        # Before the Highest Point, find where vz increases significantly
+        if highest_point_index >= 2:
+            vz_before_highest = vz[:highest_point_index]
+            time_before_highest = time[:highest_point_index]
+            # Compute acceleration in Z
+            az = np.gradient(vz_before_highest, time_before_highest)
+            # Find the index where az is maximum
+            throw_point_index = np.argmax(az)
+            throw_point = positions[throw_point_index + 1]
+        else:
+            throw_point = positions[0]
 
-    def update_console(self):
-        region = self.layout['region6']
-        console_surface = pygame.Surface((region['width'], region['height']))
-        console_surface.fill((0, 0, 0))
+        # Step 5: Identify the Hit Point
+        # After the Highest Point, find where vy (y-axis velocity) increases abruptly
+        if highest_point_index < len(vy) - 2:
+            vy_after_highest = vy[highest_point_index:]
+            time_after_highest = time[highest_point_index:]
 
-        font = pygame.font.SysFont('Consolas', 16)
-        log_lines = log_handler.get_logs()
-        max_lines = region['height'] // (font.get_height() + 2)
-        log_lines_to_display = log_lines[-max_lines:]
+            # Compute the difference in vy to find abrupt changes
+            vy_diff = np.diff(vy_after_highest)
+            # Find the index where vy increases abruptly (maximum positive difference)
+            hit_point_relative_index = np.argmax(vy_diff) + 1  # +1 to correct the index after diff
+            hit_point_index = highest_point_index + hit_point_relative_index
 
-        y_offset = 5
-        for line in log_lines_to_display:
-            text_surface = font.render(line, True, (0, 255, 0))
-            console_surface.blit(text_surface, (5, y_offset))
-            y_offset += font.get_height() + 2
+            if hit_point_index < len(positions):
+                hit_point = positions[hit_point_index]
+            else:
+                hit_point = positions[-1]
+        else:
+            hit_point = positions[-1]
 
-        self.screen.blit(console_surface, (region['x'], region['y']))
+        return throw_point, highest_point, hit_point
 
-    def update_region6(self):
-        pass
+    def calculate_angle_with_vertical(self,throw_point, highest_point):
+        # Define the vector from throw point to highest point
+        vector_throw_to_highest = np.array([
+            highest_point[0] - throw_point[0],
+            highest_point[1] - throw_point[1],
+            highest_point[2] - throw_point[2]
+        ])
 
-    def stop_video_analysis_thread(self):
-        if self.video_thread is not None:
-            self.game.stop_video_analysis()
-            self.video_thread.join(timeout=5)
-            self.video_thread = None
+        # Define the vertical vector along the z-axis from the throw point
+        vertical_vector = np.array([0, 0, 1])  # Vertical in z direction
 
-    def update_title_surface(self):
-        title_text = f"{SYS_TITLE}"
-        self.title_surface = self.create_label_surface(title_text, ("Arial", 28), "blue", "white")
+        # Calculate the dot product and magnitudes
+        dot_product = np.dot(vector_throw_to_highest, vertical_vector)
+        magnitude_throw_to_highest = np.linalg.norm(vector_throw_to_highest)
+        magnitude_vertical = np.linalg.norm(vertical_vector)
 
-        region1_x = self.layout['title_region']['x']
-        region1_y = self.layout['title_region']['y']
-        region1_width = self.layout['title_region']['width']
-        region1_height = self.layout['title_region']['height']
+        # Calculate the angle in radians
+        angle_rad = np.arccos(dot_product / (magnitude_throw_to_highest * magnitude_vertical))
 
-        title_surface_width = self.title_surface.get_width()
-        title_surface_height = self.title_surface.get_height()
+        # Convert to degrees
+        angle_deg = np.degrees(angle_rad)
+        return angle_deg
 
-        centered_x = region1_x + (region1_width - title_surface_width) // 2
-        centered_y = region1_y + (region1_height - title_surface_height) // 2
+    def update_3D_plot_surface(self, skeleton_3d, rotation_angle=135):
+        self.ax.cla()
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
 
-        self.screen.fill((0, 0, 255), rect=[region1_x, region1_y, region1_width, region1_height])
+        # Set axis limits to make the x-axis opposite and match y-axis scale
+        self.ax.set_xlim(1.72, -0.2)  # Reverse x-axis
+        self.ax.set_ylim(-1.52, 1.52)
+        self.ax.set_zlim(-0.2, 1.52)
 
-        self.screen.blit(self.title_surface, (centered_x, centered_y))
-        pygame.display.update()
+        # Ensure the aspect ratio is equal for x, y, and z
+        self.ax.set_box_aspect([1.92, 3.04, 1.72])  # Aspect ratio equalized
+
+        # Draw 3D elements on the plot
+        self.draw_serve_area_3d_cube()
+        self.draw_3d_table_net()
+
+        # Draw the table tennis table
+        table_corners = [
+            (0, 0, 0),
+            (1.52, 0, 0),
+            (1.52, 1.52, 0),
+            (0, 1.52, 0),
+            (0, 0, 0)  # Close the loop to complete the rectangle
+        ]
+        x_table, y_table, z_table = zip(*table_corners)
+        self.ax.plot(x_table, y_table, z_table, color="lightblue", linewidth=2)
+
+        # Plot skeleton structure if available
+        if skeleton_3d:
+            self.draw_skeleton_3d(skeleton_3d)
+
+        # Only draw the 3D trajectory between the throw point and hit point
+        if len(self.ball_trajectory_3d) > 3:
+            throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
+
+            try:
+                throw_index = self.ball_trajectory_3d.index(tuple(throw_point))
+                hit_index = self.ball_trajectory_3d.index(tuple(hit_point))
+            except ValueError:
+                logging.warning("Throw or hit point not found in trajectory data.")
+                throw_index, hit_index = 0, len(self.ball_trajectory_3d) - 1
+
+            trajectory_segment = self.ball_trajectory_3d[throw_index:hit_index + 1]
+
+            if len(trajectory_segment) > 3:
+                xs, ys, zs, frame_index = zip(*trajectory_segment)
+                if len(set(zip(xs, ys, zs))) > 3:
+                    try:
+                        tck, _ = splprep([xs, ys, zs], s=0)
+                        smooth_points = splev(np.linspace(0, 1, 100), tck)
+                        self.ax.plot(smooth_points[0], smooth_points[1], smooth_points[2], color='black', linewidth=2)
+                    except ValueError as e:
+                        logging.warning(f"Spline interpolation failed: {e}")
+                        self.ax.plot(xs, ys, zs, color="black", linewidth=1, linestyle="--")
+
+            # Plot each key point with a different color and add labels
+            self.ax.scatter(*throw_point[:3], color='yellow', s=2)
+            self.ax.scatter(*highest_point[:3], color='red', s=2)
+            self.ax.scatter(*hit_point[:3], color='green', s=2)
+
+            self.check_and_perform_foul_statistics()
+
+        self.draw_serve_area_3d_cube()
+
+        # Set a fixed viewing angle for better depth perception
+        self.ax.view_init(elev=20, azim=rotation_angle)
+
+        # Manually create fixed legend entries
+        from matplotlib.lines import Line2D
+
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Throw Point', markerfacecolor='yellow', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label='Highest Point', markerfacecolor='red', markersize=8),
+            Line2D([0], [0], marker='o', color='w', label='Hit Point', markerfacecolor='green', markersize=8),
+            Line2D([0], [0], linestyle='--', color='lightblue', label='Serve Area')
+        ]
+
+        # Add the fixed-position legend
+        self.ax.legend(handles=legend_elements, loc='upper left')
+
+        # Convert the Matplotlib plot to a Pygame surface
+        canvas = FigureCanvas(self.fig)
+        canvas.draw()
+        plot_surface = pygame.image.fromstring(canvas.tostring_rgb(), canvas.get_width_height(), "RGB")
+        logging.debug("3D plot surface updated.")
+        return plot_surface
 
     def create_label_surface(self, text, font, bg, fg):
         pygame_font = pygame.font.SysFont(font[0], font[1])
         label_surface = pygame_font.render(text, True, pygame.Color(fg), pygame.Color(bg))
         return label_surface
 
-    def update_video_panel(self, images, canvases, skeleton_image):
-        for source_key in images.keys():
-            try:
-                frame = images[source_key]
+    def draw_data_panel(self, data_panel_surface, screen, font, x_loc, y_loc, color=(255, 255, 255)):
+        if not hasattr(self, 'foul_check_result'):
+            return  # Exit if no foul check result is available
 
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = self.foul_check_result
+        row_height = font.get_linesize() + 10
+        column_width = data_panel_surface.get_width() // 2
 
-                if self.overlay_enabled:
-                    canvas = canvases[source_key]
-                    canvas = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-                    overlay = cv2.addWeighted(frame, 0.7, canvas, 0.3, 0)
-                else:
-                    overlay = frame
+        # Header text for summary
+        summary_text = f"Foul Serves/Total Serve Actions: {result.foul_serve_count} / {result.serve_count}"
+        summary_surface = pygame.font.Font(None, 40).render(summary_text, True, color)
+        data_panel_surface.blit(summary_surface, (10, 10))
 
-                region_key = self.get_region_key_from_source(source_key)
-                display_region = self.layout[region_key]
-                video_surface = self.video_surfaces[region_key]
+        # Column Header: "Foul Statistics"
+        foul_header_surface = pygame.font.Font(None, 32).render("Foul Statistics", True, color)
+        data_panel_surface.blit(foul_header_surface, (10, 65))
 
-                frame_height, frame_width = overlay.shape[:2]
+        # Foul Statistics section
+        foul_start_y = 95
+        for i, (foul, count) in enumerate(result.foul_stats.items()):
+            #foul_color = (255, 255, 0) if foul in result.current_fouls else color
+            foul_color = (255, 255, 255)
+            foul_text_surface = font.render(f"{foul}: {count}", True, foul_color)
+            data_panel_surface.blit(foul_text_surface, (10, foul_start_y + i * row_height))
 
-                scale = min(display_region['width'] / frame_width,
-                            display_region['height'] / frame_height)
+        # Column Header: "Current Action Statistics"
+        action_header_surface = pygame.font.Font(None, 32).render("Current Action Statistics", True, color)
+        data_panel_surface.blit(action_header_surface, (column_width + 10, 65))
 
-                new_width = int(frame_width * scale)
-                new_height = int(frame_height * scale)
+        # Define serve area bounds
+        serve_area_x_min, serve_area_x_max = 0, 1.52
+        serve_area_y_min, serve_area_y_max = -20, 0
+        serve_area_z_min, serve_area_z_max = 0, 20
 
-                overlay_resized = cv2.resize(overlay, (new_width, new_height))
-
-                video_surface.fill((0, 0, 0))
-
-                overlay_resized = np.transpose(overlay_resized, (1, 0, 2))
-
-                overlay_surface = pygame.surfarray.make_surface(overlay_resized)
-
-                video_surface.blit(overlay_surface, (
-                    (display_region['width'] - new_width) // 2,
-                    (display_region['height'] - new_height) // 2))
-                self.screen.blit(video_surface,
-                                 (display_region['x'], display_region['y']))
-            except Exception as e:
-                logger.error(f"Error updating video panel for {source_key}: {e}")
-
-        if skeleton_image is not None:
-            try:
-                skeleton_image_rgb = cv2.cvtColor(skeleton_image, cv2.COLOR_BGR2RGB)
-                region_key = 'video_region_4'
-                display_region = self.layout[region_key]
-                video_surface = self.video_surfaces[region_key]
-
-                frame_height, frame_width = skeleton_image_rgb.shape[:2]
-
-                scale = min(display_region['width'] / frame_width,
-                            display_region['height'] / frame_height)
-
-                new_width = int(frame_width * scale)
-                new_height = int(frame_height * scale)
-
-                skeleton_resized = cv2.resize(skeleton_image_rgb, (new_width, new_height))
-
-                video_surface.fill((0, 0, 0))
-
-                skeleton_resized = np.transpose(skeleton_resized, (1, 0, 2))
-
-                skeleton_surface = pygame.surfarray.make_surface(skeleton_resized)
-
-                video_surface.blit(skeleton_surface, (
-                    (display_region['width'] - new_width) // 2,
-                    (display_region['height'] - new_height) // 2))
-                self.screen.blit(video_surface,
-                                 (display_region['x'], display_region['y']))
-            except Exception as e:
-                logger.error(f"Error updating skeleton display: {e}")
-
-        pygame.display.update()
-
-    def update_skeleton_surface(self, skeleton_canvas):
-        pass
-
-    def update_data_panel(self, *args):
-        pass
-
-    def update_data(self):
-        pass
-
-    def setup_ui(self):
-        self.title_surface = pygame.Surface((self.layout['title_region']['width'], self.layout['title_region']['height']))
-        self.title_surface.fill((255, 255, 255))
-
-        self.video_surfaces = {}
-        for i in range(1, 5):
-            region_key = f'video_region_{i}'
-            region = self.layout[region_key]
-            video_surface = pygame.Surface((region['width'], region['height']))
-            video_surface.fill((0, 0, 0))
-            self.video_surfaces[region_key] = video_surface
-
-        border_color = (0, 0, 255)
-        border_width = 4
-
-        pygame.draw.rect(self.screen, border_color, pygame.Rect(self.layout['title_region']['x'],
-                                                                self.layout['title_region']['y'],
-                                                                self.layout['title_region']['width'],
-                                                                self.layout['title_region']['height']), border_width)
-        for i in range(1, 5):
-            region_key = f'video_region_{i}'
-            region = self.layout[region_key]
-            pygame.draw.rect(self.screen, border_color, pygame.Rect(region['x'],
-                                                                    region['y'],
-                                                                    region['width'],
-                                                                    region['height']), border_width)
-
-        self.region6_surface = pygame.Surface((self.layout['region6']['width'], self.layout['region6']['height']))
-        self.region6_surface.fill((0, 0, 0))
-
-        self.region7_surface = pygame.Surface((self.layout['region7']['width'], self.layout['region7']['height']))
-        self.region7_surface.fill((255, 255, 255))
-
-        self.screen.blit(self.region6_surface, (self.layout['region6']['x'], self.layout['region6']['y']))
-        self.screen.blit(self.region7_surface, (self.layout['region7']['x'], self.layout['region7']['y']))
-
-        pygame.draw.rect(self.screen, border_color, pygame.Rect(self.layout['region6']['x'],
-                                                                self.layout['region6']['y'],
-                                                                self.layout['region6']['width'],
-                                                                self.layout['region6']['height']), border_width)
-        pygame.draw.rect(self.screen, border_color, pygame.Rect(self.layout['region7']['x'],
-                                                                self.layout['region7']['y'],
-                                                                self.layout['region7']['width'],
-                                                                self.layout['region7']['height']), border_width)
-
-        self.update_title_surface()
-        self.update_mode_label_and_reset_var()
-
-    def update_speed_stats(self, speeds):
-        pass
-
-    def mps_to_kph(self, speed_mps):
-        return speed_mps * 3.6
-
-    def update_mode_label_and_reset_var(self):
-        self.game.reset_variables()
-
-    def on_key_press(self, event):
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE:
-                self.game.close_camera()
-                pygame.quit()
-                sys.exit()
-            elif event.key == pygame.K_F3:
-                self.overlay_enabled = not self.overlay_enabled
-
-    def get_region_key_from_source(self, source_key):
-        mapping = {
-            'camera1': 'video_region_1',
-            'camera2': 'video_region_2',
-            'camera3': 'video_region_3',
+        # Current Action Statistics section
+        action_start_y = 95
+        action_stats = {
+            "Throw Point": f"({result.throw_point[0]:.2f}, {result.throw_point[1]:.2f}, {result.throw_point[2]:.2f})",
+            "Highest Point": f"({result.highest_point[0]:.2f}, {result.highest_point[1]:.2f}, {result.highest_point[2]:.2f})",
+            "Hit Point": f"({result.hit_point[0]:.2f}, {result.hit_point[1]:.2f}, {result.hit_point[2]:.2f})",
+            "Angle with Vertical": f"{result.angle_with_vertical:.1f} °",
+            "Tossed Upward Distance": f"{result.tossed_upward_distance:.1f} cm",
         }
-        return mapping.get(source_key)
 
-    def main_loop(self):
-        while True:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.game.close_camera()
-                    pygame.quit()
-                    sys.exit()
-                self.on_key_press(event)
+        for i, (label, value) in enumerate(action_stats.items()):
+            if "Point" in label:
+                # Check if the point is within serve area bounds
+                x, y, z,_ = getattr(result, label.replace(" ", "_").lower())  # Access point coordinates dynamically
+                in_serve_area = (serve_area_x_min <= x <= serve_area_x_max and
+                                 serve_area_y_min <= y <= serve_area_y_max and
+                                 serve_area_z_min <= z <= serve_area_z_max)
+                point_color = (255, 255, 255) if in_serve_area else (0, 0, 255)  # Magenta for unexpected case
+            elif label == "Angle with Vertical":
+                point_color = (255, 255, 255) if result.angle_with_vertical <= 30 else (0, 0, 255)  # Magenta for > 30°
+            elif label == "Tossed Upward Distance":
+                point_color = (255, 255, 255) if result.tossed_upward_distance >= 16 else (0, 0, 255)  # Magenta for < 16 cm
+            else:
+                point_color = color  # Default to white for other cases
 
-            if not self.queue.empty():
-                images, canvases, skeleton_image = self.queue.get()
-                self.update_video_panel(images, canvases, skeleton_image)
-                self.update_statistics_table()
+            # Render each line with the determined color
+            action_text_surface = font.render(f"{label}: {value}", True, point_color)
+            data_panel_surface.blit(action_text_surface, (column_width + 10, action_start_y + i * row_height))
 
-            current_time = time.time()
-            if self.console_last_update_time is None or (current_time - self.console_last_update_time) >= self.console_update_interval:
-                self.update_console()
-                self.console_last_update_time = current_time
+        # Draw table lines for layout
+        for row in range(8):  # Adjusted for added headers
+            pygame.draw.line(data_panel_surface, (100, 100, 100), (0, 60 + row * row_height),
+                             (data_panel_surface.get_width(), 60 + row * row_height), 1)
 
-            pygame.display.update()
+        pygame.draw.line(data_panel_surface, (100, 100, 100), (column_width, 60),
+                         (column_width, 60 + row_height * 7), 1)
+
+        # Display the data panel on the screen
+        screen.blit(data_panel_surface, (x_loc, y_loc))
+
+    def read_frame(self, camera):
+        ret, frame = self.caps[camera].read()
+        if not ret:
+            self.caps[camera].set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = self.caps[camera].read()
+        return frame
+
+    def check_and_perform_foul_statistics(self):
+        if len(self.ball_trajectory_3d) > 1 and not self.foul_checked:
+            last_point = self.ball_trajectory_3d[-1]
+            if last_point[1] > ACTION_3D_Y_SPLIT:
+                self.perform_foul_check_and_statistics()
+                self.foul_checked = True  # 设置标志，避免重复统计
+
+    def reset_trajectories_if_needed(self, last_point, current_point):
+        if last_point[1] > ACTION_3D_Y_SPLIT and current_point[1] < 0.2:
+            self.reset_trajectories()
+
+    def reset_trajectories(self):
+        self.ball_trajectory_3d.clear()
+        self.trajectory_2d_camera1.clear()
+        self.trajectory_2d_camera2.clear()
+        self.foul_checked = False
+
+    def perform_foul_check_and_statistics(self):
+        """In the current 3D trajectory ending, perform foul checks and update statistics."""
+        if len(self.ball_trajectory_3d) < 5:
+            return  # Skip if trajectory data is insufficient
+
+        # Calculate key points
+        throw_point, highest_point, hit_point = self.find_serve_key_points(self.ball_trajectory_3d)
+
+        # Calculate Tossed Upward Distance
+        tossed_upward_distance = (highest_point[2] - throw_point[2])*100
+
+        # Current fouls for this trajectory
+        current_fouls = []
+
+        # Foul check conditions
+        if throw_point[2] < 0:
+            self.foul_stats['Tossed from Below Table Surface'] += 1
+            current_fouls.append('Tossed from Below Table Surface')
+        if throw_point[1] > 0 or highest_point[1] > 0 or hit_point[1] > 0:
+            self.foul_stats['In Front of the End Line'] += 1
+            current_fouls.append('In Front of the End Line')
+
+        if (throw_point[0] < 0 or highest_point[0] < 0 or hit_point[0] < 0
+                or throw_point[0] > 1.52 or highest_point[0] > 1.52 or hit_point[0] > 1.52):
+            self.foul_stats['Beyond the sideline extension'] += 1
+            current_fouls.append('Beyond the sideline extension')
+
+        angle_with_vertical = self.calculate_angle_with_vertical(throw_point, highest_point)
+        if angle_with_vertical > 30:
+            self.foul_stats['Backward Angle More Than 30°'] += 1
+            current_fouls.append('Backward Angle More Than 30°')
+        if tossed_upward_distance < 16:
+            self.foul_stats['Tossed Upward Less Than 16 cm'] += 1
+            current_fouls.append('Tossed Upward Less Than 16 cm')
+
+        # Update serve statistics
+        self.serve_count += 1
+        if current_fouls:
+            self.foul_serve_count += 1
+
+        start_frame_index = self.ball_trajectory_3d[0][3]  # First frame index
+        end_frame_index = self.ball_trajectory_3d[-1][3]  # Last frame index
+        action_segment = {
+            'start_frame': start_frame_index,
+            'throw_frame': int(throw_point[3]),
+            'highest_frame': int(highest_point[3]),
+            'hit_frame': int(hit_point[3]),
+            'end_frame': end_frame_index,
+            'current_fouls': current_fouls.copy()  # Store fouls for this action
+        }
+        self.action_segments.append(action_segment)
+
+        # Create FoulCheckResult
+        self.foul_check_result = FoulCheckResult(
+            throw_point=throw_point,
+            highest_point=highest_point,
+            hit_point=hit_point,
+            angle_with_vertical=angle_with_vertical,
+            tossed_upward_distance=tossed_upward_distance,
+            current_fouls=current_fouls.copy(),
+            foul_serve_count=self.foul_serve_count,
+            serve_count=self.serve_count,
+            foul_stats=self.foul_stats.copy()
+        )
+
+    def update_frame_cache(self, frame, frame_index, camera_key="camera1"):
+        cache = self.frame_cache if camera_key == "camera1" else self.frame_cache_cam2
+
+        if len(cache) >= self.frame_cache_limit:
+            cache.pop(0)
+        cache.append((frame_index, frame))
+
+    def get_cached_frame_image(self, frame_index, frame_cache):
+        for cached_index, frame in frame_cache:
+            if cached_index == frame_index:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                return pygame.surfarray.make_surface(cv2.resize(frame_rgb, (213, 160)).swapaxes(0, 1))
+        return None
+
+def main():
+    pygame.init()
+
+    screen_width, screen_height = 1530, 930
+
+    screen = pygame.display.set_mode((screen_width, screen_height))
+    pygame.display.set_caption("Table Tennis 3D Ball Trajectory - Enlarged Interface")
+    game = TableTennisGame()
+    font = pygame.font.Font(None, 24)
+    running, paused = True, False
+    rotation_angle = 0  # Initial angle for rotating the 3D plot
+    last_skeleton_3d = None  # Store the last skeleton data
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                paused = not paused
+
+        if not paused:
+            frame1 = game.read_frame("camera1")
+            frame2 = game.read_frame("camera2")
+            frame_index = int(game.caps["camera1"].get(cv2.CAP_PROP_POS_FRAMES))  # Get current frame index
+            game.update_frame_cache(frame1, frame_index, "camera1")
+            game.update_frame_cache(frame2, frame_index, "camera2")
+            game.VIDEO_WIDTH, game.VIDEO_HEIGHT = frame1.shape[1], frame1.shape[0]
+            landmarks1 = game.process_frame_for_skeleton(frame1, game.pose_camera1, "camera1")
+            landmarks2 = game.process_frame_for_skeleton(frame2, game.pose_camera2, "camera2")
+            skeleton_3d = game.calculate_3d_skeleton(landmarks1, landmarks2, game.VIDEO_WIDTH, game.VIDEO_HEIGHT) if landmarks1 and landmarks2 else None
+            last_skeleton_3d = skeleton_3d  # Update the last known skeleton data
+            plot_surface = game.update_3D_plot_surface(skeleton_3d)
+
+            ball_point1 = game.track_ball_2d(frame1, "camera1", game.trajectory_2d_camera1)
+            ball_point2 = game.track_ball_2d(frame2, "camera2", game.trajectory_2d_camera2)
+
+            if ball_point1 is not None:
+                current_x = ball_point1[0][0]  # x-coordinate of the current point
+
+                # Check if there are at least two previous points to calculate x1 and x2
+                if len(game.trajectory_2d_camera1) >= 2:
+                    last_x = game.trajectory_2d_camera1[-1][0]  # x-coordinate of the last point
+                    second_last_x = game.trajectory_2d_camera1[-2][0]  # x-coordinate of the second-last point
+
+                    # Calculate distances
+                    x1 = abs(last_x - second_last_x)  # Distance between the last two points
+                    x2 = abs(current_x - last_x)  # Distance from the last point to the current point
+
+                    # Reset trajectory if x2 is more than three times x1
+                    if x2 > 3 * x1:
+                        game.reset_trajectories()
+
+            if ball_point1 is not None and ball_point2 is not None:
+                ball_3d = game.calculate_3d_coordinates(ball_point1, ball_point2)
+                print("frame_index=",frame_index)
+                if game.ball_trajectory_3d:
+                    game.reset_trajectories_if_needed(game.ball_trajectory_3d[-1], ball_3d)
+                #game.ball_trajectory_3d.append(tuple(ball_3d))
+                game.ball_trajectory_3d.append((*tuple(ball_3d),frame_index))
+
+                if len(game.ball_trajectory_3d) > 100:
+                    game.ball_trajectory_3d.pop(0)
+
+
+
+            game.draw_2d_trajectory(frame1, game.trajectory_2d_camera1)
+            game.draw_2d_trajectory(frame2, game.trajectory_2d_camera2)
+            game.draw_table_points_calibration(frame1, game.camera1_points, game.camera1_3d_coordinates)
+            game.draw_table_points_calibration(frame2, game.camera2_points, game.camera2_3d_coordinates)
+
+            frame1_rgb = cv2.cvtColor(frame1, cv2.COLOR_BGR2RGB)
+            frame2_rgb = cv2.cvtColor(frame2, cv2.COLOR_BGR2RGB)
+            frame1_surface = pygame.surfarray.make_surface(cv2.resize(frame1_rgb, (int(VIDEO_WIDTH/2), int(VIDEO_HEIGHT/2))).swapaxes(0, 1))
+            frame2_surface = pygame.surfarray.make_surface(cv2.resize(frame2_rgb, (int(VIDEO_WIDTH/2), int(VIDEO_HEIGHT/2))).swapaxes(0, 1))
+
+            plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
+
+
+
+
+        else:
+            # Rotate the 3D plot while paused
+            rotation_angle = (rotation_angle + 1) % 360
+            plot_surface = game.update_3D_plot_surface(last_skeleton_3d, rotation_angle=rotation_angle)
+            plot_surface_resized = pygame.transform.scale(plot_surface, (screen_width - VIDEO_WIDTH, VIDEO_HEIGHT*2))
+            screen.blit(plot_surface_resized, (0, 0))
+
+        # Define the layout positions
+        screen.blit(frame1_surface, (screen_width - VIDEO_WIDTH, 0))  # Top-left: Camera 1
+        screen.blit(frame2_surface, (screen_width - VIDEO_WIDTH / 2, 0))  # Top-right: Camera 2
+        screen.blit(plot_surface_resized, (0, 0))  # Bottom-left: 3D plot
+
+        draw_camera_title(game, screen, screen_width)
+        bar_height, bar_y ,bar_x= draw_action_segmentation(frame_index, game, screen, screen_width)
+        data_panel = pygame.Surface((VIDEO_WIDTH, VIDEO_HEIGHT))
+        data_panel.fill((50, 50, 50))  # Dark gray placeholder color
+        data_panel_y = bar_y + bar_height + 380
+        game.draw_data_panel(data_panel, screen, font, screen_width - VIDEO_WIDTH, data_panel_y)
+        draw_title(game, screen, screen_width)
+
+        pygame.display.flip()
+
+    pygame.quit()
+    sys.exit()
+
+
+def draw_camera_title(game, screen, screen_width):
+    # Add labels to the camera panels
+    label_font = pygame.font.SysFont("Arial", 20)
+    left_label = label_font.render("Left Camera", True, (255, 255, 255))
+    right_label = label_font.render("Right Camera", True, (255, 255, 255))
+    # Position labels on the video panels
+    screen.blit(left_label, (screen_width - game.VIDEO_WIDTH + 10, 10))  # Left top corner of left camera
+    right_label_width = right_label.get_width()
+    screen.blit(right_label, (screen_width - right_label_width - 10, 10))  # Right top corner of right camera
+
+
+def draw_action_segmentation(frame_index, game, screen, screen_width):
+    # Draw the horizontal bar for action segments
+    bar_height = 20
+    bar_width = VIDEO_WIDTH
+    bar_x = screen_width - VIDEO_WIDTH
+    bar_y = VIDEO_HEIGHT / 2  # Position the bar under the video feeds
+    pygame.draw.rect(screen, (128, 128, 128), (bar_x, bar_y, bar_width, bar_height))  # Gray background
+
+    # Calculate min and max frame indices
+    if game.action_segments:
+        min_frame_index = min(segment['start_frame'] for segment in game.action_segments)
+        max_frame_index = max(segment['end_frame'] for segment in game.action_segments)
+    else:
+        min_frame_index = 0
+        max_frame_index = frame_index
+    if max_frame_index == min_frame_index:
+        max_frame_index += 1
+
+    for segment in game.action_segments:
+        start_frame = segment['start_frame']
+        end_frame = segment['end_frame']
+        start_x = bar_x + ((start_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        end_x = bar_x + ((end_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        segment_width = end_x - start_x
+
+        color = (0, 0, 255) if segment['current_fouls'] else (255, 255, 255)
+        pygame.draw.rect(screen, color, (start_x, bar_y, segment_width, bar_height))
+
+        throw_frame, highest_frame, hit_frame = segment['throw_frame'], segment['highest_frame'], segment['hit_frame']
+        throw_x = bar_x + ((throw_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        highest_x = bar_x + ((highest_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+        hit_x = bar_x + ((hit_frame - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+
+        pygame.draw.line(screen, (255, 255, 0), (throw_x, bar_y), (throw_x, bar_y + bar_height), 2)
+        pygame.draw.line(screen, (255, 0, 0), (highest_x, bar_y), (highest_x, bar_y + bar_height), 2)
+        pygame.draw.line(screen, (0, 255, 0), (hit_x, bar_y), (hit_x, bar_y + bar_height), 2)
+
+    current_x = bar_x + ((frame_index - min_frame_index) / (max_frame_index - min_frame_index)) * bar_width
+    pygame.draw.line(screen, (255, 255, 255), (current_x, bar_y), (current_x, bar_y + bar_height), 1)
+
+    # Add legend under the bar
+    legend_font = pygame.font.SysFont("Arial", 16)
+    legend_x, legend_y = bar_x, bar_y + bar_height + 10
+
+    pygame.draw.rect(screen, (255, 255, 255), (legend_x, legend_y, 20, 10))
+    screen.blit(legend_font.render("No Foul", True, (255, 255, 255)), (legend_x + 25, legend_y - 5))
+    pygame.draw.rect(screen, (0, 0, 255), (legend_x + 100, legend_y, 20, 10))
+    screen.blit(legend_font.render("Foul", True, (255, 255, 255)), (legend_x + 125, legend_y - 5))
+
+    pygame.draw.line(screen, (255, 255, 0), (legend_x + 200, legend_y + 5), (legend_x + 220, legend_y + 5), 2)
+    screen.blit(legend_font.render("Throw Point", True, (255, 255, 255)), (legend_x + 225, legend_y - 5))
+    pygame.draw.line(screen, (255, 0, 0), (legend_x + 350, legend_y + 5), (legend_x + 370, legend_y + 5), 2)
+    screen.blit(legend_font.render("Highest Point", True, (255, 255, 255)), (legend_x + 375, legend_y - 5))
+    pygame.draw.line(screen, (0, 255, 0), (legend_x + 500, legend_y + 5), (legend_x + 520, legend_y + 5), 2)
+    screen.blit(legend_font.render("Hit Point", True, (255, 255, 255)), (legend_x + 525, legend_y - 5))
+
+    if game.action_segments:
+        latest_segment = game.action_segments[-1]
+        latest_segment_index = len(game.action_segments)
+
+        # Retrieve Camera 1 images
+        throw_img_cam1 = game.get_cached_frame_image(latest_segment['throw_frame'], game.frame_cache)
+        highest_img_cam1 = game.get_cached_frame_image(latest_segment['highest_frame'], game.frame_cache)
+        hit_img_cam1 = game.get_cached_frame_image(latest_segment['hit_frame'], game.frame_cache)
+
+        # Retrieve Camera 2 images (assuming a separate cache for Camera 2)
+        throw_img_cam2 = game.get_cached_frame_image(latest_segment['throw_frame'], game.frame_cache_cam2)
+        highest_img_cam2 = game.get_cached_frame_image(latest_segment['highest_frame'], game.frame_cache_cam2)
+        hit_img_cam2 = game.get_cached_frame_image(latest_segment['hit_frame'], game.frame_cache_cam2)
+
+        image_y = legend_y + 30
+        label_font = pygame.font.SysFont("Arial", 14)
+
+        # Display Camera 1 Images
+        if throw_img_cam1:
+            screen.blit(throw_img_cam1, (legend_x, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Throw", True, (255, 255, 255)), (legend_x, image_y))
+        if highest_img_cam1:
+            screen.blit(highest_img_cam1, (legend_x + 220, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Highest", True, (255, 255, 255)), (legend_x + 220, image_y))
+        if hit_img_cam1:
+            screen.blit(hit_img_cam1, (legend_x + 440, image_y))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam1 Hit", True, (255, 255, 255)), (legend_x + 440, image_y))
+
+        # Display Camera 2 Images (Offset vertically)
+        image_y_cam2 = image_y + 170  # Adjust vertical position for Camera 2 images
+        if throw_img_cam2:
+            screen.blit(throw_img_cam2, (legend_x, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Throw", True, (255, 255, 255)), (legend_x, image_y_cam2))
+        if highest_img_cam2:
+            screen.blit(highest_img_cam2, (legend_x + 220, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Highest", True, (255, 255, 255)), (legend_x + 220, image_y_cam2))
+        if hit_img_cam2:
+            screen.blit(hit_img_cam2, (legend_x + 440, image_y_cam2))
+            screen.blit(label_font.render(f"{latest_segment_index} Cam2 Hit", True, (255, 255, 255)), (legend_x + 440, image_y_cam2))
+
+    return bar_height, bar_y, bar_x
+
+
+def draw_title(game, screen, screen_width):
+    # title
+    title_text = f"{SYS_TITLE}"
+    title_surface = game.create_label_surface(title_text, ("Arial", 28), "blue", "white")
+    region1_x = 0
+    region1_y = 0
+    region1_width = screen_width - VIDEO_WIDTH
+    region1_height = 60
+    title_surface_width = title_surface.get_width()
+    title_surface_height = title_surface.get_height()
+    centered_x = region1_x + (region1_width - title_surface_width) // 2
+    centered_y = region1_y + (region1_height - title_surface_height) // 2
+    screen.fill((0, 0, 255), rect=[region1_x, region1_y, region1_width, region1_height])
+    screen.blit(title_surface, (centered_x, centered_y))
+
 
 if __name__ == "__main__":
-    game = TableTennisGame()
-    app = TableTennisApp(game)
-    app.main_loop()
+    main()
