@@ -22,28 +22,19 @@ highest_point = np.array([highest_point_data['x'], highest_point_data['y'], high
 
 # Vector from throw point to highest point
 line_vector = highest_point - throw_point
-line_x, line_y, line_z = line_vector
 
 # Vector N: vertical normal vector at the throw point (assumed as z-axis)
 N = np.array([0, 0, 1])  # assuming a vertical direction in the z-axis
-N_x, N_y, N_z = N
 
-# Calculate the dot product of line vector and N
-dot_product = line_x * N_x + line_y * N_y + line_z * N_z
-
-# Calculate the magnitudes of line vector and N
-magnitude_line = np.sqrt(line_x**2 + line_y**2 + line_z**2)
-magnitude_N = np.sqrt(N_x**2 + N_y**2 + N_z**2)
-
-# Calculate the cosine of the angle
-cos_theta = dot_product / (magnitude_line * magnitude_N)
+# Calculate the cosine of the angle between line vector and N
+cos_theta = line_vector[2] / np.linalg.norm(line_vector)
 
 # Calculate the angle in radians, then convert to degrees
-theta_radians = np.arccos(cos_theta)
+theta_radians = np.arccos(np.clip(cos_theta, -1.0, 1.0))
 theta_degrees = math.degrees(theta_radians)
 
 # Print the angle
-print(f"The angle θ between the throw point's normal vector and the line connecting the throw and highest point is {theta_degrees:.2f} degrees")
+print(f"The angle θ between the vertical normal vector and the line connecting the throw and highest point is {theta_degrees:.2f} degrees")
 
 # Plot the trajectory and the key points
 fig = plt.figure()
@@ -55,7 +46,7 @@ trajectory_x = [-point['x'] for point in trajectory]  # Reverse x-axis
 trajectory_y = [-point['y'] for point in trajectory]  # Reverse y-axis
 trajectory_z = [point['z'] for point in trajectory]
 
-ax.plot(trajectory_x, trajectory_y, trajectory_z, label='3D Trajectory', color='lightgreen')
+ax.plot(trajectory_x, trajectory_y, trajectory_z, label='3D Trajectory', color='black')
 
 # Plot throw point and highest point
 throw_point[0] = -throw_point[0]  # Reverse x-axis of throw point
@@ -63,18 +54,18 @@ throw_point[1] = -throw_point[1]  # Reverse y-axis of throw point
 highest_point[0] = -highest_point[0]  # Reverse x-axis of highest point
 highest_point[1] = -highest_point[1]  # Reverse y-axis of highest point
 
-ax.scatter(*throw_point, color='green', label='Throw Point')
+ax.scatter(*throw_point, color='yellow', label='Throw Point')
 ax.scatter(*highest_point, color='red', label='Highest Point')
 
 # Plot vertical normal vector N from throw point
-ax.quiver(*throw_point, N_x, N_y, N_z, color='purple', label='Vertical Normal Vector N')
+ax.quiver(*throw_point, N[0], N[1], N[2], color='purple', label='Vertical Normal Vector N',linestyle='--')
 
 # Draw a line connecting throw point and highest point
-ax.plot([throw_point[0], highest_point[0]], [throw_point[1], highest_point[1]], [throw_point[2], highest_point[2]], color='orange', linestyle='--', label='Line Connecting Points')
+ax.plot([throw_point[0], highest_point[0]], [throw_point[1], highest_point[1]], [throw_point[2], highest_point[2]], color='purple', linestyle='--', label='Line Connecting Points')
 
 # Annotate the angle on the plot
 mid_point = (throw_point + highest_point) / 2
-ax.text(mid_point[0], mid_point[1] - 0.15, mid_point[2], f"θ = {theta_degrees:.2f}°", color='purple')
+ax.text(mid_point[0]-0.008, mid_point[1] - 0.05, mid_point[2], f"θ", color='purple' , fontsize=20)
 
 # Set labels
 ax.set_xlabel('X')
