@@ -8,7 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 # Device configuration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 # Data augmentation functions
 def scale_trajectory(sequence, scale_range=(0.9, 1.1)):
     scale_factor = np.random.uniform(*scale_range)
@@ -24,7 +23,7 @@ def scale_trajectory(sequence, scale_range=(0.9, 1.1)):
     return scaled_sequence
 
 
-def add_noise(sequence, noise_std=0.005):
+def add_noise(sequence, noise_std=0.0001):  # Reduced noise level
     noisy_sequence = []
     for point in sequence:
         noisy_point = [
@@ -39,21 +38,21 @@ def add_noise(sequence, noise_std=0.005):
 
 # Function to compute min-max values
 def compute_min_max(json_file):
-    min_vals = np.array([float('inf'), float('inf'), float('inf')])
-    max_vals = np.array([float('-inf'), float('-inf'), float('-inf')])
+    min_vals = np.array([float('inf'), float('inf'), float('inf'), float('inf')])
+    max_vals = np.array([float('-inf'), float('-inf'), float('-inf'), float('-inf')])
 
     with open(json_file, 'r') as f:
         data = json.load(f)
         for item in data:
             # Extract trajectory
             for point in item["trajectory"]:
-                coords = np.array([point["x"], point["y"], point["z"]])
+                coords = np.array([point["x"], point["y"], point["z"], point["frame_index"]])
                 min_vals = np.minimum(min_vals, coords)
                 max_vals = np.maximum(max_vals, coords)
 
             # Extract key points
             for key_point in item["key_points"].values():
-                coords = np.array([key_point["x"], key_point["y"], key_point["z"]])
+                coords = np.array([key_point["x"], key_point["y"], key_point["z"], key_point["frame_index"]])
                 min_vals = np.minimum(min_vals, coords)
                 max_vals = np.maximum(max_vals, coords)
 
@@ -66,7 +65,7 @@ min_vals, max_vals = compute_min_max('0020-trajectories_for_training_3d_truth.js
 
 # Dataset class to load JSON data with 1000x data augmentation and normalization
 class TrajectoryDataset(Dataset):
-    def __init__(self, json_file, min_vals, max_vals, max_len=50, augment=True, augment_factor=10000):
+    def __init__(self, json_file, min_vals, max_vals, max_len=50, augment=True, augment_factor=100000):
         with open(json_file, 'r') as f:
             self.data = json.load(f)
         self.min_vals = min_vals
@@ -80,7 +79,7 @@ class TrajectoryDataset(Dataset):
 
     def normalize(self, coords):
         # Normalize to [0, 1] range
-        return (coords - self.min_vals) / (self.max_vals - self.min_vals)
+        return (coords - self.min_vals) / (self.max_vals - self.min_vals + 1e-8)  # Added epsilon to avoid division by zero
 
     def __getitem__(self, idx):
         original_idx = idx % len(self.data)
@@ -96,7 +95,7 @@ class TrajectoryDataset(Dataset):
             x = add_noise(x)
 
         # Normalize x
-        x = [self.normalize(np.array(point[:3])).tolist() + [point[3]] for point in x]
+        x = [self.normalize(np.array(point)).tolist() for point in x]
 
         # Pad or truncate x to max_len
         x = x[:self.max_len] + [[0, 0, 0, 0]] * (self.max_len - len(x))
@@ -106,21 +105,27 @@ class TrajectoryDataset(Dataset):
             self.normalize(np.array([
                 key_points_data["throw_point"]["x"],
                 key_points_data["throw_point"]["y"],
-                key_points_data["throw_point"]["z"]
-            ])).tolist() + [key_points_data["throw_point"]["frame_index"]],
+                key_points_data["throw_point"]["z"],
+                key_points_data["throw_point"]["frame_index"]
+            ])).tolist(),
             self.normalize(np.array([
                 key_points_data["highest_point"]["x"],
                 key_points_data["highest_point"]["y"],
-                key_points_data["highest_point"]["z"]
-            ])).tolist() + [key_points_data["highest_point"]["frame_index"]],
+                key_points_data["highest_point"]["z"],
+                key_points_data["highest_point"]["frame_index"]
+            ])).tolist(),
             self.normalize(np.array([
                 key_points_data["hit_point"]["x"],
                 key_points_data["hit_point"]["y"],
-                key_points_data["hit_point"]["z"]
-            ])).tolist() + [key_points_data["hit_point"]["frame_index"]]
+                key_points_data["hit_point"]["z"],
+                key_points_data["hit_point"]["frame_index"]
+            ])).tolist()
         ]
 
-        # Convert to tensors
+        # 将 y 填充到 max_len
+        y = y + [[0, 0, 0, 0]] * (self.max_len - len(y))
+
+        # 转换为张量
         x = torch.tensor(x, dtype=torch.float32)
         y = torch.tensor(y, dtype=torch.float32)
 
@@ -195,8 +200,8 @@ class TransformerModel(nn.Module):
 model = TransformerModel(emb_dim=32, nhead=4, num_layers=3, max_len=50).to(device)
 
 # Loss and optimizer
-criterion = nn.MSELoss()  # MSELoss for regression on 3D coordinates
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+criterion = nn.SmoothL1Loss()  # Changed to SmoothL1Loss for more stability
+optimizer = optim.Adam(model.parameters(), lr=0.0001)  # Reduced learning rate
 
 # Training loop
 num_epochs = 5
@@ -216,6 +221,7 @@ for epoch in range(num_epochs):
         loss = criterion(output, tgt_output)
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Added gradient clipping
         optimizer.step()
 
     print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
@@ -235,7 +241,7 @@ def predict_sequence(model, x, min_vals, max_vals, max_len=3):
 
     # De-normalize only the first 3 dimensions (coordinates), leave frame index as is
     denormalized_output = tgt_input.squeeze(0).cpu().numpy()
-    denormalized_output[:, :3] = denormalized_output[:, :3] * (max_vals - min_vals) + min_vals
+    denormalized_output[:, :3] = denormalized_output[:, :3] * (max_vals[:3] - min_vals[:3]) + min_vals[:3]
 
     return denormalized_output  # Return as numpy array
 

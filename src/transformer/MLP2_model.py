@@ -93,7 +93,7 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training Loop with Best Model Saving
-num_epochs = 1000
+num_epochs = 200
 best_val_loss = float('inf')
 best_model_path = "best_trajectory_mlp.pth"
 train_losses = []
