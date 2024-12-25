@@ -4,34 +4,26 @@ import numpy as np
 import os
 from pathlib import Path
 from tqdm import tqdm
+from ultralytics import YOLO
 
 
-class PoseDetector:
-    def __init__(self, mode=False, complexity=1, smooth=True,
-                 enable_segmentation=False, smooth_segmentation=True,
-                 min_detection_confidence=0.5, min_tracking_confidence=0.5,
-                 mosaic_size=8, blur_strength=55):  # Reduced mosaic size, added blur_strength
-        self.mode = mode
-        self.complexity = complexity
-        self.smooth = smooth
-        self.enable_segmentation = enable_segmentation
-        self.smooth_segmentation = smooth_segmentation
-        self.min_detection_confidence = min_detection_confidence
-        self.min_tracking_confidence = min_tracking_confidence
-        self.mosaic_size = mosaic_size
-        self.blur_strength = blur_strength
+class PersonBlurrer:
+    def __init__(self, yolo_model="yolov8n.pt", mosaic_size=8, blur_strength=55):
+        # Initialize YOLO
+        self.yolo_model = YOLO(yolo_model)
 
+        # Initialize MediaPipe
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
-            static_image_mode=self.mode,
-            model_complexity=self.complexity,
-            smooth_landmarks=self.smooth,
-            enable_segmentation=self.enable_segmentation,
-            smooth_segmentation=self.smooth_segmentation,
-            min_detection_confidence=self.min_detection_confidence,
-            min_tracking_confidence=self.min_tracking_confidence
+            static_image_mode=True,
+            model_complexity=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
         )
-        self.mp_draw = mp.solutions.drawing_utils
+
+        # Blur parameters
+        self.mosaic_size = mosaic_size
+        self.blur_strength = blur_strength
 
     def apply_enhanced_blur(self, image, x1, y1, x2, y2):
         """Apply multiple blur effects for stronger anonymization"""
@@ -76,8 +68,7 @@ class PoseDetector:
         if not x_coords or not y_coords:
             return None
 
-        # Increased padding for better coverage
-        padding = 20  # Increased from 30
+        padding = 20
         x1 = max(0, min(x_coords) - padding)
         y1 = max(0, min(y_coords) - padding)
         x2 = min(w, max(x_coords) + padding)
@@ -85,39 +76,58 @@ class PoseDetector:
 
         return (x1, y1, x2, y2)
 
-    def find_poses(self, img, draw=False):
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        self.results = self.pose.process(img_rgb)
-        poses = []
+    def process_image(self, img):
+        """Process image with YOLO person detection and MediaPipe face blur"""
+        # Get original image dimensions
+        img_height, img_width = img.shape[:2]
 
-        if self.results.pose_landmarks:
-            for pose_landmarks in [self.results.pose_landmarks]:
-                bbox = self.get_head_bbox(pose_landmarks.landmark, img.shape)
-                if bbox:
-                    x1, y1, x2, y2 = bbox
-                    img = self.apply_enhanced_blur(img, x1, y1, x2, y2)
+        # Run YOLO detection
+        results = self.yolo_model(img, verbose=False,conf=0.2)
 
-                if draw:
-                    connections = [conn for conn in self.mp_pose.POSE_CONNECTIONS
-                                   if not (conn[0] <= 10 and conn[1] <= 10)]
-                    self.mp_draw.draw_landmarks(
-                        img, pose_landmarks, connections)
+        # Process each person detection
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                # Check if detection is person (class 0)
+                if int(box.cls) == 0:
+                    # Get bounding box coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
 
-                pose_points = []
-                for landmark in pose_landmarks.landmark:
-                    h, w, _ = img.shape
-                    cx, cy = int(landmark.x * w), int(landmark.y * h)
-                    pose_points.append([cx, cy])
-                poses.append(pose_points)
+                    # Extract person ROI
+                    person_roi = img[y1:y2, x1:x2]
+                    if person_roi.size == 0:
+                        continue
 
-        return img, poses
+                    # Process with MediaPipe
+                    person_rgb = cv2.cvtColor(person_roi, cv2.COLOR_BGR2RGB)
+                    pose_results = self.pose.process(person_rgb)
+
+                    if pose_results.pose_landmarks:
+                        # Get head bbox in ROI coordinates
+                        head_bbox = self.get_head_bbox(pose_results.pose_landmarks.landmark, person_roi.shape)
+
+                        if head_bbox:
+                            # Convert head bbox to original image coordinates
+                            roi_x1, roi_y1, roi_x2, roi_y2 = head_bbox
+                            abs_x1 = x1 + roi_x1
+                            abs_y1 = y1 + roi_y1
+                            abs_x2 = x1 + roi_x2
+                            abs_y2 = y1 + roi_y2
+
+                            # Apply blur
+                            img = self.apply_enhanced_blur(img, abs_x1, abs_y1, abs_x2, abs_y2)
+
+        return img
 
 
-def process_images(input_folder, output_folder, mosaic_size=8, blur_strength=55):
+def process_images(input_folder, output_folder, yolo_model="yolov8n.pt", mosaic_size=8, blur_strength=55):
     Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    detector = PoseDetector(mosaic_size=mosaic_size, blur_strength=blur_strength)
+    # Initialize processor
+    processor = PersonBlurrer(yolo_model=yolo_model, mosaic_size=mosaic_size, blur_strength=blur_strength)
 
+    # Get image files
     image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
     image_files = []
     for ext in image_extensions:
@@ -126,28 +136,35 @@ def process_images(input_folder, output_folder, mosaic_size=8, blur_strength=55)
 
     print(f"Found {len(image_files)} images")
 
+    # Process images
     for img_path in tqdm(image_files, desc="Processing images"):
-        img = cv2.imread(str(img_path))
-        if img is None:
-            print(f"Failed to read image: {img_path}")
-            continue
+        try:
+            img = cv2.imread(str(img_path))
+            if img is None:
+                print(f"Failed to read image: {img_path}")
+                continue
 
-        processed_img, _ = detector.find_poses(img)
+            # Process image
+            processed_img = processor.process_image(img)
 
-        output_path = Path(output_folder) / img_path.name
-        cv2.imwrite(str(output_path), processed_img)
+            # Save result
+            output_path = Path(output_folder) / img_path.name
+            cv2.imwrite(str(output_path), processed_img)
+
+        except Exception as e:
+            print(f"Error processing {img_path}: {str(e)}")
 
 
 def main():
-    input_folder = "C:\\workspace\\datasets\\coco-pp\\images\\val"
-    output_folder = "C:\\workspace\\datasets\\coco-pp\\images\\val_no_face"
+    input_folder = "C:\\workspace\\datasets\\coco-pp\\images\\train"
+    output_folder = "C:\\workspace\\datasets\\coco-pp\\images\\train_no_face"
 
-    # Enhanced blur settings
     process_images(
         input_folder=input_folder,
         output_folder=output_folder,
-        mosaic_size=8,  # Smaller size for stronger pixelation
-        blur_strength=55  # Increased blur strength
+        yolo_model="yolov8n.pt",  # You can change to yolov8s.pt, yolov8m.pt, etc.
+        mosaic_size=8,
+        blur_strength=55
     )
 
     print("Processing complete!")
