@@ -37,12 +37,10 @@ def get_data():
     segments = []
     current_segment = [x[0]]
 
+
     for i in range(1, len(x)):
-        if (x[i].isdigit() and current_segment[0].isdigit()) or (x[i].isalpha() and current_segment[0].isalpha()):
-            current_segment.append(x[i])
-        else:
-            segments.append(current_segment[0].upper())  # Take the first item of the current segment
-            current_segment = [x[i]]
+        segments.append(current_segment[0].upper())  # Take the first item of the current segment
+        current_segment = [x[i]]
 
     segments.append(current_segment[0].upper())  # Add the first item of the last segment
 
@@ -78,7 +76,7 @@ class Dataset(torch.utils.data.Dataset):
         super(Dataset, self).__init__()
 
     def __len__(self):
-        return 1000000
+        return 10000
 
     def __getitem__(self, i):
         return get_data()
@@ -100,10 +98,9 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="The PyTorch API of nested tensors is in prototype stage")
 warnings.filterwarnings("ignore", category=UserWarning, message="Torch was not compiled with flash attention")
 
-
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+print(device)
 # Define model parameters
 input_dim = len(zidian_x)
 output_dim = len(zidian_y)
